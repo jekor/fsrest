@@ -1,0 +1,30 @@
+Name:          dirrest
+Version:       0.0.1
+Cabal-Version: >= 1.2
+License:       GPL
+License-File:  COPYING
+Copyright:     2012 Chris Forno
+Author:        Chris Forno (jekor)
+Maintainer:    jekor@jekor.com
+Stability:     experimental
+Bug-Reports:   jekor@jekor.com
+Homepage:      https://github.com/jekor/dirrest
+Package-URL:   https://github.com/jekor/dirrest/zipball/master
+Category:      Web
+Synopsis:      directory tree http server
+Description:   directory tree http server
+Tested-With:   GHC == 7.0.2
+Build-Type:    Custom
+
+Executable dirrest
+  Main-Is:       dirrest.hs
+  Build-Depends: base >= 4,
+                 bytestring,
+                 cgi,
+                 directory,
+                 filepath,
+                 network,
+                 process,
+                 scgi >= 0.3.1,
+                 unix
+  GHC-Options:   -Wall -fno-warn-type-defaults -threaded -O2
