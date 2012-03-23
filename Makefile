@@ -1,10 +1,17 @@
-all : dirrest
+BIN=dirrest
+DIST=dist/build/$(BIN)/$(BIN)
 
-configure :
+all : $(BIN)
+
+install : $(DIST)
+	cabal install
+
+$(BIN) : $(DIST)
+	cp $< $@
+
+dist/setup-config : $(BIN).cabal
 	cabal configure
 
-dirrest : dirrest.hs
+$(DIST) : dist/setup-config $(BIN).hs
 	cabal build
-
-install : dist/build/dirrest/dirrest
-	cp $< .
+	@touch $@ # cabal doesn't always update the build (if it doesn't need to)
