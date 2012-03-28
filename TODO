@@ -1,1 +1,4 @@
-* Add support for negotiating languages.
+* Defects
+** Content type negotiation doesn't seem to be deterministic. See: http://jekor.com/article/is-haskell-a-good-choice-for-web-applications
+* Features
+** Add support for negotiating languages.

@@ -1,10 +1,12 @@
+dirrest starts from a simple concept: directories are resources and files are representations.
+
 = What is This? =
 
 We've confused representations (files) with resources (urls). dirrest keeps the 2 distinct.
 
 In dirrest, resources are represented by directories. This means that you are forced to make the distinction. Files within the directory are the representations/physical manifestations of the resource. They are named by their mime type (with "/" replaced with "." due to "/" being reserved as a path separator).
 
-restdir encourages some other REST principles:
+dirrest encourages some other REST principles:
 
 POST -> create new subordinate resources
 PUT -> overwrite the resource (idempotent)
