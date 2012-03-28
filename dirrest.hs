@@ -4,7 +4,7 @@ import Data.ByteString.Lazy (readFile, hPut, hGetContents)
 import Data.List (find)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import Network (PortID(..))
-import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, setHeader, requestAccept, negotiate, parseContentType, showContentType, Accept, ContentType, Charset, Language)
+import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, setHeader, requestAccept, negotiate, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language)
 import Network.CGI.Protocol (CGIResult(..))
 import Network.SCGI (runSCGIConcurrent')
 import Network.URI (URI(..))
@@ -43,14 +43,15 @@ data Representation = Representation { repPath        :: FilePath
 
 fileDetails :: FilePath -> IO (Maybe Representation)
 fileDetails path = do
-  -- TODO: Build up the content type more rigorously.
+  -- TODO: Support mime types with dots in them (only replace the first one).
   let ct' = parseContentType $ translate [('.', '/')] $ takeFileName path
   case ct' of
     Nothing -> return Nothing
     Just ct -> return $ Just $ Representation { repPath        = path
-                                               , repContentType = ct
-                                               , repCharset     = Nothing
-                                               , repLanguage    = Nothing }
+                                              -- Default to UTF-8 for text for now.
+                                              , repContentType = if ctType ct == "text" then ct {ctParameters = [("charset", "UTF-8")]} else ct
+                                              , repCharset     = if ctType ct == "text" then Just (Charset "UTF-8") else Nothing
+                                              , repLanguage    = Nothing }
 
 availableRepresentations :: FilePath -> IO [Representation]
 availableRepresentations path = do
