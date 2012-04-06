@@ -1,5 +1,5 @@
 Name:          dirrest
-Version:       0.0.1
+Version:       0.1.2
 Cabal-Version: >= 1.2
 License:       GPL
 License-File:  COPYING
@@ -27,4 +27,5 @@ Executable dirrest
                  process,
                  scgi >= 0.3.1,
                  unix
+  Extensions:    OverloadedStrings
   GHC-Options:   -Wall -fno-warn-type-defaults -threaded -O2

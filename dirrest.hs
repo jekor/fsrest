@@ -2,17 +2,19 @@ import Control.Concurrent (forkIO)
 import Control.Monad (filterM)
 import Data.ByteString.Lazy (readFile, hPut, hGetContents)
 import Data.List (find)
-import Data.Maybe (fromJust, fromMaybe, catMaybes)
+import Data.Maybe (fromMaybe, catMaybes)
 import Network (PortID(..))
-import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, setHeader, requestAccept, negotiate, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language)
+import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, getInputs, setHeader, requestAccept, negotiate, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language, setStatus)
 import Network.CGI.Protocol (CGIResult(..))
 import Network.SCGI (runSCGIConcurrent')
 import Network.URI (URI(..))
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs)
+import System.Exit (ExitCode(..))
 import System.FilePath (takeFileName, normalise)
+import System.IO (hPutStrLn, stderr)
 import System.Posix.Files (fileExist)
-import System.Process (readProcess, proc, CreateProcess(..), createProcess, StdStream(..))
+import System.Process (readProcess, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
 import Prelude hiding (readFile)
 
@@ -23,7 +25,7 @@ main = do
     [dir, port] -> do
       let portNum = (read port)::Integer
       runSCGIConcurrent' forkIO 10 (PortNumber (fromIntegral portNum)) $ handleRequest dir
-    _     -> putStrLn "dirrest <directory> <port>"
+    _     -> hPutStrLn stderr "dirrest <directory> <port>"
 
 translate :: (Eq a) => [(a, a)] -> [a] -> [a]
 translate sr = map (\s -> fromMaybe s $ lookup s sr)
@@ -109,6 +111,17 @@ handleRequest dir = do
                     perms' <- liftIO $ getPermissions $ repPath r
                     if executable perms'
                        then -- TODO: Does readProcess exist in a ByteString version?
+                         -- do body <- getBodyFPS
+                         --    inputs <- getInputs
+                         --    outputFPS =<< liftIO (do
+                         --      let proc' = (proc (repPath r) []) {cwd = Just path
+                         --                              ,env = Just inputs
+                         --                              ,std_in = CreatePipe
+                         --                              ,std_out = CreatePipe}
+                         --      (Just hin, Just hout, _, ph) <- createProcess proc'
+                         --      hPut hin body
+                         --      hGetContents hout
+                         --      exitCode <- waitForProcess ph)
                             output =<< liftIO (readProcess (repPath r) [] "")
                        else do
                          setHeader "Content-Type" $ showContentType $ repContentType r
@@ -122,15 +135,20 @@ handleRequest dir = do
                     if readable perms && executable perms'
                        then
                          do body <- getBodyFPS
-                            outputFPS =<< liftIO (do
-                              let proc' = proc p []
-                                  proc'' = proc' {cwd = Just path
-                                                 ,std_in = CreatePipe
-                                                 ,std_out = CreatePipe
-                                                 ,std_err = CreatePipe}
-                              (hin, hout, _, _) <- createProcess proc''
-                              hPut (fromJust hin) body
-                              hGetContents (fromJust hout))
+                            inputs <- getInputs
+                            (out, exitCode) <- liftIO (do
+                              let proc' = (proc p []) {cwd = Just path
+                                                      ,env = Just inputs
+                                                      ,std_in = CreatePipe
+                                                      ,std_out = CreatePipe}
+                              (Just hin, Just hout, _, ph) <- createProcess proc'
+                              hPut hin body
+                              out' <- hGetContents hout
+                              exitCode' <- waitForProcess ph
+                              return (out', exitCode'))
+                            case exitCode of
+                              ExitSuccess   -> setStatus 200 "OK" >> outputFPS out
+                              ExitFailure _ -> setStatus 400 "Bad Request" >> outputFPS out
                        else outputMethodNotAllowed =<< liftIO (availableMethods path)
               _     -> outputMethodNotAllowed =<< liftIO (availableMethods path)
           else outputError 403 "Forbidden" []

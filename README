@@ -52,3 +52,56 @@ POST /faq
 POST /
 => 405 Method Not Allowed
 => Allow: GET, HEAD
+
+= POST Handling =
+
+== POST executable ==
+
+If a POST executable exists, it's executed with the POST body, if any, passed into stdin. Any request variables are set as environment variables. Note that file inputs are not currently supported.
+
+Here's a simple example: let's create an echo server. Remember those?
+
+$ ln -s /bin/cat POST
+
+Done. To test it with cURL:
+
+$ curl -H "Content-Type: text/plain" -X POST -d 'ping' http://yoursite/
+ping$
+
+The $ is here because the output came back out without a newline. Why don't we fix that? But to do so, we're going to have to get more complicated. A shell script!
+
+$ rm POST && cat > POST && chmod +x POST
+#!/bin/bash
+cat -
+echo ""
+^D
+$ curl -H "Content-Type: text/plain" -X POST -d 'ping' http://yoursite/
+ping
+
+Much better!
+
+What about post variables?
+
+$ echo "env" >> POST
+$ curl -H "Content-Type: text/plain" -X POST -d 'ping' http://newjekor.lan/
+ping
+PWD=/home/jekor/project/newjekor.lan/www
+SHLVL=1
+_=/usr/bin/env
+
+These are 3 environment variables that are always available with Bash. Now let's try passing some data.
+
+$ curl -X POST -d 'ping=pong' http://newjekor.lan/
+
+PWD=/home/jekor/project/newjekor.lan/www
+ping=pong
+SHLVL=1
+_=/usr/bin/env
+
+Notice that the request body is empty now, and there's a new environment variable named "ping" with value "pong".
+
+= Shell Script? =
+
+It might sound crazy, but it allows for rapid prototyping and development.
+
+The point is that each resource is separate from each other and can be developed in isolation instead of as a large monolithic system.
