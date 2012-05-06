@@ -25,7 +25,7 @@ main = do
     [dir, port] -> do
       let portNum = (read port)::Integer
       runSCGIConcurrent' forkIO 10 (PortNumber (fromIntegral portNum)) $ handleRequest dir
-    _     -> hPutStrLn stderr "dirrest <directory> <port>"
+    _     -> hPutStrLn stderr "fsrest <directory> <port>"
 
 translate :: (Eq a) => [(a, a)] -> [a] -> [a]
 translate sr = map (\s -> fromMaybe s $ lookup s sr)

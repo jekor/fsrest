@@ -1,4 +1,4 @@
-Name:          dirrest
+Name:          fsrest
 Version:       0.1.2
 Cabal-Version: >= 1.2
 License:       GPL
@@ -8,16 +8,16 @@ Author:        Chris Forno (jekor)
 Maintainer:    jekor@jekor.com
 Stability:     experimental
 Bug-Reports:   jekor@jekor.com
-Homepage:      https://github.com/jekor/dirrest
-Package-URL:   https://github.com/jekor/dirrest/zipball/master
+Homepage:      https://github.com/jekor/fsrest
+Package-URL:   https://github.com/jekor/fsrest/zipball/master
 Category:      Web
-Synopsis:      directory tree http server
-Description:   directory tree http server
+Synopsis:      filesystem-based RESTful HTTP server
+Description:   filesystem-based RESTful HTTP server
 Tested-With:   GHC == 7.0.2
 Build-Type:    Simple
 
-Executable dirrest
-  Main-Is:       dirrest.hs
+Executable fsrest
+  Main-Is:       fsrest.hs
   Build-Depends: base >= 4,
                  bytestring,
                  cgi,

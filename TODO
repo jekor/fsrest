@@ -1,4 +1,5 @@
 * Defects
+** Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
 ** Block reserved CGI environment variables from being overwritten.
 * Features
 ** Add support for negotiating languages.

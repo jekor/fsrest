@@ -1,4 +1,4 @@
-BIN=dirrest
+BIN=fsrest
 DIST=dist/build/$(BIN)/$(BIN)
 
 all : $(BIN)
