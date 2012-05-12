@@ -50,7 +50,7 @@ Accept-Encoding: gzip, deflate
 Accept-Language: en-us,en;q=0.5
 ```
 
-The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't availabe. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that the `text.html` file is the best match for the client's request and sends it back to the client:
+The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that the `text.html` file is the best match for the client's request and sends it back to the client:
 
 ```
 HTTP/1.1 200 OK
