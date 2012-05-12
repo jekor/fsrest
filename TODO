@@ -2,6 +2,9 @@
 ** Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
 ** Block reserved CGI environment variables from being overwritten.
 * Features
+** Default to responding to posts with type text/plain? Make it possible to indicate the response content type?
+** Write a manpage.
 ** Add support for negotiating languages.
 ** Check the exit code of a program. If non-zero, give an error to the client.
 ** Map exit codes to HTTP error codes?
+** Make it a standalone server.
