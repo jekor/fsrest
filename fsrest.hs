@@ -4,7 +4,7 @@ import Data.ByteString.Lazy (readFile, hPut, hGetContents)
 import Data.List (find)
 import Data.Maybe (fromMaybe, catMaybes)
 import Network (PortID(..))
-import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, getInputs, setHeader, requestAccept, negotiate, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language, setStatus)
+import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, getInputs, setHeader, requestAccept, negotiate, requestContentType, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language, setStatus)
 import Network.CGI.Protocol (CGIResult(..))
 import Network.SCGI (runSCGIConcurrent')
 import Network.URI (URI(..))
@@ -110,19 +110,7 @@ handleRequest dir = do
                   Just r  -> do
                     perms' <- liftIO $ getPermissions $ repPath r
                     if executable perms'
-                       then -- TODO: Does readProcess exist in a ByteString version?
-                         -- do body <- getBodyFPS
-                         --    inputs <- getInputs
-                         --    outputFPS =<< liftIO (do
-                         --      let proc' = (proc (repPath r) []) {cwd = Just path
-                         --                              ,env = Just inputs
-                         --                              ,std_in = CreatePipe
-                         --                              ,std_out = CreatePipe}
-                         --      (Just hin, Just hout, _, ph) <- createProcess proc'
-                         --      hPut hin body
-                         --      hGetContents hout
-                         --      exitCode <- waitForProcess ph)
-                            output =<< liftIO (readProcess (repPath r) [] "")
+                       then output =<< liftIO (readProcess (repPath r) [] "")
                        else do
                          setHeader "Content-Type" $ showContentType $ repContentType r
                          outputFPS =<< liftIO (readFile $ repPath r)
@@ -136,9 +124,10 @@ handleRequest dir = do
                        then
                          do body <- getBodyFPS
                             inputs <- getInputs
+                            contentType <- requestContentType
                             (out, exitCode) <- liftIO (do
                               let proc' = (proc p []) {cwd = Just path
-                                                      ,env = Just inputs
+                                                      ,env = Just (inputs ++ maybe [] (\t -> [("CONTENT_TYPE", t), ("FSREST_CONTENT_TYPE", translate [('/', '.')] t)]) contentType)
                                                       ,std_in = CreatePipe
                                                       ,std_out = CreatePipe}
                               (Just hin, Just hout, _, ph) <- createProcess proc'
