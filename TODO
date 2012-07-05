@@ -1,7 +1,12 @@
 * Defects
 ** Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
 ** Block reserved CGI environment variables from being overwritten.
+* Documentation
+** What happens with ambiguity?
+*** In practice, it's not generally a problem.
+** De-emphasize the whole multiple-representations thing. More important is that each resource can have sub-resources.
 * Features
+** Make sure that fsrest handles ambiguity deterministically (maybe the most recent representation or the oldest or something).
 ** Default to responding to posts with type text/plain? Make it possible to indicate the response content type?
 ** Write a manpage.
 ** Add support for negotiating languages.
