@@ -14,15 +14,11 @@ fsrest is NOT:
 
 # Motivation and Philosophy
 
-Most modern websites are served by monolithic programs. These programs are usually written in a single language and communicate with a database. Each new area/feature of the site tends to be incorporated in the program, especially because the request dispatcher is usually located in the program.
+Most modern websites are served by monolithic programs. These programs are usually written in a single language and communicate with a database. Each new feature of the site increases the size and complexity of the program.
 
 ## The Right Tool for the Job
 
-fsrest isn't tied to a particular programming language. Mostly, it serves static files. How you get the files there is up to you. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
-
-## Rapid Prototyping
-
-You might not want to run a production website with a collection of shell scripts, but they can be useful for rapidly prototyping an API. You can always replace the scripts with more robust programs later.
+fsrest isn't tied to a particular programming language. It's job is just to dispatch HTTP requests to the appropriate place. Mostly, it serves static files. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
 
 ## RESTful by Design
 
@@ -30,7 +26,7 @@ Due to the way fsrest requires that resources (URLs) be directories, it's more d
 
 # How it Works
 
-fsrest starts with a simple concept: directories are resources and files are representations. For example, if you want to serve a page at `/home`, instead of creating a `home.html` or `home.php` file, you'd create a `home` directory at the top of your web root and then place representations of the home page within the directory.
+fsrest starts with a simple concept: directories are resources and files are representations. For example, if you want to serve a page at `/home`, instead of creating a `home.html` or `home.php` file, you'd create a `home` directory at the top of your web root and then place a representation of the home page within the directory.
 
 ```
 $ mkdir home
@@ -39,7 +35,7 @@ $ cat > home/text.html
 ^D
 ```
 
-The `home` directory is the resource represented by the URL `/home`. It has an HTML representation in the file `text.html`. (Note that fsrest looks for files by MIME type, but it uses `.` instead of `/` since `/` is reserved as the directory separator on Unix-like filesystems).
+The `home` directory is the resource represented by the URL `/home`. It has an HTML representation in the file `text.html`. `text.html` wasn't chosen at random: it's the MIME type for HTML (but with the `/` replaced by a `.`).
 
 Let's take a look at a simplified HTTP request:
 
@@ -50,7 +46,7 @@ Accept-Encoding: gzip, deflate
 Accept-Language: en-us,en;q=0.5
 ```
 
-The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that the `text.html` file is the best match for the client's request and sends it back to the client:
+The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that `text/html` is the best match for the client's request and sends it back to the client:
 
 ```
 HTTP/1.1 200 OK
@@ -70,7 +66,7 @@ Accept-Encoding: gzip, deflate
 Accept-Language: en-us,en;q=0.5
 ```
 
-Now the HTTP client is requesting an image. It knows it's requesting an image (probably because it found the URL in an `<img>` `src` attribute), and it passes along details about the type of images it prefers and will accept. But the URL explicitly mentions logo.gif, and most likely the web server on the other end is going to ignore that information (since it can't do anything with it anyway, there's only 1 way to serve a GIF off the filesystem).
+Now the HTTP client is requesting an image. It knows it's requesting an image (probably because it found the URL in an `<img>` `src` attribute), and it passes along details about the type of images it prefers and will accept. But the URL explicitly mentions logo.gif, and most likely the web server on the other end is going to ignore any `Accept` headers (since it can't do anything with it anyway: there's only 1 way to serve a GIF off the filesystem).
 
 But wait, who needs pretty URLs for images? After all, how often are you going to see those in the address bar?
 
@@ -141,12 +137,12 @@ $ chmod +x comments/POST
 
 Let's break this down line by line:
 
- - The first line is a shebang that let's the shell know that this is a bash script.
- - Next, we use `find` to find the highest comment number already in the directory (the current working directory is the directory that the resource is being POSTed to).
- - The next line sets `new` to 1 greater than `largest`. If largest was empty (because there were no existing comments) it sets it to `1`.
- - Once we know the new comment number, we create it with `mkdir`.
- - Finally, we store the body of the POST request into a file with the POSTed representation. fsrest sets the variable `FSREST_CONTENT_TYPE` to the POSTed content type with slashes converted to dots. It also sets the variable `CONTENT_TYPE` to the unstranslated content type in case you need it.
- - We set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
+ 1. The first line is a shebang that lets the shell know that this is a bash script.
+ 2. Next, we use `find` to find the highest comment number already in the directory (the current working directory is the directory that the resource is being POSTed to).
+ 3. The next line sets `new` to 1 greater than `largest`. If largest was empty (because there were no existing comments) it sets it to `1`.
+ 4. Once we know the new comment number, we create it with `mkdir`.
+ 5. Finally, we store the body of the POST request into a file with the POSTed representation. fsrest sets the variable `FSREST_CONTENT_TYPE` to the POSTed content type with slashes converted to dots. It also sets the variable `CONTENT_TYPE` to the unstranslated content type in case you need it.
+ 6. We set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
 
 ```
 $ curl -H "Content-Type: text/plain" -X POST -d "Hello, world." http://yoursite/comments
@@ -213,7 +209,7 @@ Chose any port number you like, it just has to match what you started fsrest wit
 fsrest /var/www 10035
 ```
 
-Note that fsrest runs in the foreground. If you want to run it as a daemon, I suggest using something like [runit](http://smarden.org/runit/)
+Note that fsrest runs in the foreground. If you want to run it as a daemon, I suggest using something like [runit](http://smarden.org/runit/).
 
 # Limitations
 
@@ -221,4 +217,28 @@ Here are some current limitations that might be removed in later versions.
 
  - Dynamic `GET` isn't supported (i.e. GET requests handled by programs).
  - `PUT`, `DELETE`, etc. are not implemented.
- - Language negotiation based on `Accept-Language` is not possible.
+ - Language negotiation based on `Accept-Language` is not implemented.
+
+Note that content negotiation is broken in the haskell cgi library. You'll need the following patch to fix it:
+
+```
+diff --git a/Network/CGI/Accept.hs b/Network/CGI/Accept.hs
+index bde8939..cee33a2 100644
+--- a/Network/CGI/Accept.hs
++++ b/Network/CGI/Accept.hs
+@@ -56,7 +56,7 @@ negotiate ys (Just xs) = reverse [ z | (q,z) <- sortBy (compare `on` fst) [ (qua
+ --testNegotiate ts a = negotiate [t | Just t <- map (parseM parseHeaderValue "<source>") ts] (parseM parseHeaderValue "<source>" a)
+ 
+ quality :: Acceptable a => Accept a -> a -> Quality
+-quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
++quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ reverse $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
+ 
+ compareSpecificity :: Acceptable a => a -> a -> Ordering
+ compareSpecificity x y
+```
+
+# Common Problems
+
+## `scgi: readProcess: some.file  (exit 127): failed`
+
+This is probably happening because the file is marked as executable and fsrest is trying to execute it (and failing).
