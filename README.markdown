@@ -215,26 +215,49 @@ Note that fsrest runs in the foreground. If you want to run it as a daemon, I su
 
 Here are some current limitations that might be removed in later versions.
 
- - Dynamic `GET` isn't supported (i.e. GET requests handled by programs).
  - `PUT`, `DELETE`, etc. are not implemented.
  - Language negotiation based on `Accept-Language` is not implemented.
 
-Note that content negotiation is broken in the haskell cgi library. You'll need the following patch to fix it:
+Note that content negotiation is a bit broken in the haskell cgi library. I've also made a minor change to how it works to handle ambiguous negotiation results. You'll need the following patch to fix it:
 
 ```
+diff --git a/Network/CGI.hs b/Network/CGI.hs
+index 2d1faeb..0cfdd66 100644
+--- a/Network/CGI.hs
++++ b/Network/CGI.hs
+@@ -205,7 +205,7 @@ outputError c m es =
+              htmlType = ContentType "text" "html"  [("charset","ISO-8859-1")]
+          cts <- liftM (negotiate [htmlType,textType]) requestAccept
+          case cts of
+-           ct:_ | ct == textType -> 
++           (ct,_):_ | ct == textType -> 
+                 do setHeader "Content-type" (showContentType textType)
+                    text <- errorText c m es
+                    output text
 diff --git a/Network/CGI/Accept.hs b/Network/CGI/Accept.hs
-index bde8939..cee33a2 100644
+index bde8939..60284f0 100644
 --- a/Network/CGI/Accept.hs
 +++ b/Network/CGI/Accept.hs
-@@ -56,7 +56,7 @@ negotiate ys (Just xs) = reverse [ z | (q,z) <- sortBy (compare `on` fst) [ (qua
- --testNegotiate ts a = negotiate [t | Just t <- map (parseM parseHeaderValue "<source>") ts] (parseM parseHeaderValue "<source>" a)
+@@ -48,15 +48,12 @@ starOrEqualTo :: String -> String -> Bool
+ starOrEqualTo x y = x == "*" || x == y
+ 
+ 
+-negotiate :: Acceptable a => [a] -> Maybe (Accept a) -> [a]
+-negotiate ys Nothing = ys
+-negotiate ys (Just xs) = reverse [ z | (q,z) <- sortBy (compare `on` fst) [ (quality xs y,y) | y <- ys], q > 0]
+-
+---testNegotiate :: (HeaderValue a, Acceptable a) => [String] -> String -> [a]
+---testNegotiate ts a = negotiate [t | Just t <- map (parseM parseHeaderValue "<source>") ts] (parseM parseHeaderValue "<source>" a)
++negotiate :: Acceptable a => [a] -> Maybe (Accept a) -> [(a, Quality)]
++negotiate ys Nothing = map (flip (,) 1.0) ys
++negotiate ys (Just xs) = reverse [ (z,q) | (q,z) <- sortBy (compare `on` fst) [ (quality xs y,y) | y <- ys], q > 0]
  
  quality :: Acceptable a => Accept a -> a -> Quality
 -quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
 +quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ reverse $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
  
  compareSpecificity :: Acceptable a => a -> a -> Ordering
- compareSpecificity x y
+ compareSpecificity x y 
 ```
 
 # Common Problems
@@ -242,3 +265,7 @@ index bde8939..cee33a2 100644
 ## `scgi: readProcess: some.file  (exit 127): failed`
 
 This is probably happening because the file is marked as executable and fsrest is trying to execute it (and failing).
+
+## Multiple Choices
+
+If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to `GET`.

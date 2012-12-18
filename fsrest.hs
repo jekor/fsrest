@@ -1,19 +1,24 @@
+import Control.Applicative ((<$>))
 import Control.Concurrent (forkIO)
 import Control.Monad (filterM)
 import Data.ByteString.Lazy (readFile, hPut, hGetContents)
-import Data.List (find)
-import Data.Maybe (fromMaybe, catMaybes)
+import Data.List (find, intercalate)
+import Data.Maybe (fromMaybe, catMaybes, maybeToList)
 import Network (PortID(..))
-import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, getInputs, setHeader, requestAccept, negotiate, requestContentType, parseContentType, showContentType, Accept, ContentType(..), Charset(..), Language, setStatus)
+-- Warning: This uses a modified Network.CGI. I couldn't find a way to just
+-- override the functions I needed because Network.CGI hides the internals that
+-- need to be referenced.
+import Network.CGI (CGI, liftIO, requestURI, requestMethod, outputFPS, output, outputError, outputMethodNotAllowed, getBodyFPS, getInputs, negotiate, Accept, setHeader, requestAccept, requestContentType, parseContentType, showContentType, ContentType(..), Charset(..), Language, setStatus)
 import Network.CGI.Protocol (CGIResult(..))
 import Network.SCGI (runSCGIConcurrent')
 import Network.URI (URI(..))
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode(..))
-import System.FilePath (takeFileName, normalise)
+import System.FilePath (takeFileName, normalise, (</>))
 import System.IO (hPutStrLn, stderr)
-import System.Posix.Files (fileExist)
+import System.IO.Error (tryIOError)
+import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
 import System.Process (readProcess, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
 import Prelude hiding (readFile)
@@ -41,10 +46,10 @@ data Representation = Representation { repPath        :: FilePath
                                      , repContentType :: ContentType
                                      , repCharset     :: Maybe Charset
                                      , repLanguage    :: Maybe Language }
-                      deriving Show
+                      deriving (Show, Eq)
 
-fileDetails :: FilePath -> IO (Maybe Representation)
-fileDetails path = do
+fileRepresentation :: FilePath -> IO (Maybe Representation)
+fileRepresentation path = do
   -- TODO: Support mime types with dots in them (only replace the first one).
   let ct' = parseContentType $ translate [('.', '/')] $ takeFileName path
   case ct' of
@@ -56,28 +61,26 @@ fileDetails path = do
                                               , repLanguage    = Nothing }
 
 availableRepresentations :: FilePath -> IO [Representation]
-availableRepresentations path = do
-  contents <- getDirectoryContents path
-  reps <- mapM fileDetails =<< filterM usable contents
-  return $ catMaybes reps
-  -- TODO: Use any GET symlink to move its target to the top of the list.
+availableRepresentations path =
+  catMaybes <$> (mapM fileRepresentation =<< filterM usable =<< getDirectoryContents path)
  where usable :: FilePath -> IO Bool
        usable p = do
-         -- TODO: This might be an unnecessary stat. It's here to filter out directories.
          exists <- doesFileExist p
          if exists
-            then do perms <- getPermissions p
-                    return $ readable perms
+            then fileAccess p True False False
             else return False
 
-resourceGet :: FilePath -> Maybe (Accept ContentType) -> IO (Maybe Representation)
+resourceGet :: FilePath -> Maybe (Accept ContentType) -> IO [Representation]
 resourceGet path accept = do
   reps <- availableRepresentations path
   -- For now, only negotiate the content type.
   case negotiate (map repContentType reps) accept of
-    []     -> return Nothing
-    -- TODO: Implement 300 Multiple Choices if there is no clear choice
-    (ct:_) -> return $ find ((== ct) . repContentType) reps
+    []     -> return []
+    ct:cts -> do
+      -- Is the quality of the first representation unsurpassed?
+      case filter ((== (snd ct)) . snd) cts of
+        [] -> return $ maybeToList $ find ((== (fst ct)) . repContentType) reps
+        cts' -> return $ filter ((`elem` (map fst (ct:cts'))) . repContentType) reps
 
 resourcePostFile :: FilePath -> IO (Maybe FilePath)
 resourcePostFile path = do
@@ -87,6 +90,20 @@ resourcePostFile path = do
   if exists
      then return $ Just $ normalise postPath
      else return Nothing
+
+outputRepresentation :: Representation -> CGI CGIResult
+outputRepresentation r = do
+  perms' <- liftIO $ getPermissions $ repPath r
+  if executable perms'
+    then output =<< liftIO (readProcess (repPath r) [] "")
+    else do
+      setHeader "Content-Type" $ showContentType $ repContentType r
+      outputFPS =<< liftIO (readFile $ repPath r)
+
+outputMultipleChoices :: [Representation] -> CGI CGIResult
+outputMultipleChoices rs = do
+  setStatus 300 "Multiple Choices"
+  output $ intercalate "\n" $ map (showContentType . repContentType) rs
 
 handleRequest :: FilePath -> CGI CGIResult
 handleRequest dir = do
@@ -104,16 +121,19 @@ handleRequest dir = do
             case method of
               "GET" -> do
                 accept <- requestAccept
-                rep <- liftIO $ resourceGet path accept
-                case rep of
-                  Nothing -> outputMethodNotAllowed =<< liftIO (availableMethods path)
-                  Just r  -> do
-                    perms' <- liftIO $ getPermissions $ repPath r
-                    if executable perms'
-                       then output =<< liftIO (readProcess (repPath r) [] "")
-                       else do
-                         setHeader "Content-Type" $ showContentType $ repContentType r
-                         outputFPS =<< liftIO (readFile $ repPath r)
+                reps <- liftIO $ resourceGet path accept
+                case reps of
+                  -- TODO: outputMethodNotAllowed should only happen if there are other available methods. If not, it should be a 404.
+                  [] -> outputMethodNotAllowed =<< liftIO (availableMethods path)
+                  [r] -> outputRepresentation r
+                  rs -> do
+                    -- Disambiguate with a GET symlink if it exists.
+                    link <- liftIO $ tryIOError $ readSymbolicLink $ path </> "GET"
+                    case link of
+                      Right path' -> case find ((== path') . repPath) rs of
+                                       Nothing -> outputMultipleChoices rs
+                                       Just r -> outputRepresentation r
+                      _ -> outputMultipleChoices rs
               "POST" -> do
                 postPath <- liftIO $ resourcePostFile path
                 case postPath of
