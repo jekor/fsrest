@@ -1,10 +1,22 @@
 * Defects
+** DONE Implement as standalone server, not using Network.CGI.
+   CLOSED: [2013-01-25 Fri 09:24]
+   - State "DONE"       from ""           [2013-01-25 Fri 09:24] \\
+     Implemented SCGI. Punting on HTTP for now.
+** Implement CGI.
+** Implement SCGI over unix domain sockets.
 ** Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
 ** Block reserved CGI environment variables from being overwritten.
+*** Still necessary after CGI support?
 * Documentation
 ** What happens with ambiguity?
 *** In practice, it's not generally a problem.
 ** De-emphasize the whole multiple-representations thing. More important is that each resource can have sub-resources.
+** Security:
+*** Using a sandbox.
+*** SSL
+**** Why it's not implemented natively.
+**** How to deal with https:// URLs.
 * Features
 ** Make sure that fsrest handles ambiguity deterministically (maybe the most recent representation or the oldest or something).
 ** Default to responding to posts with type text/plain? Make it possible to indicate the response content type?
