@@ -13,7 +13,7 @@
 *** In practice, it's not generally a problem.
 ** De-emphasize the whole multiple-representations thing. More important is that each resource can have sub-resources.
 ** Security:
-*** Using a sandbox.
+*** Using a sandbox/chroot.
 *** SSL
 **** Why it's not implemented natively.
 **** How to deal with https:// URLs.

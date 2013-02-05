@@ -130,7 +130,7 @@ $ cat > comments/POST
 largest=$(find . -iregex './[0-9]+' -printf "%f\n" | sort -r | head -n 1)
 new=$(expr $largest + 1)
 mkdir $new
-cat > "$new/$FSREST_CONTENT_TYPE"
+cat > "$new/${CONTENT_TYPE/\//.})"
 ^D
 $ chmod +x comments/POST
 ```
@@ -141,7 +141,7 @@ Let's break this down line by line:
  2. Next, we use `find` to find the highest comment number already in the directory (the current working directory is the directory that the resource is being POSTed to).
  3. The next line sets `new` to 1 greater than `largest`. If largest was empty (because there were no existing comments) it sets it to `1`.
  4. Once we know the new comment number, we create it with `mkdir`.
- 5. Finally, we store the body of the POST request into a file with the POSTed representation. fsrest sets the variable `FSREST_CONTENT_TYPE` to the POSTed content type with slashes converted to dots. It also sets the variable `CONTENT_TYPE` to the unstranslated content type in case you need it.
+ 5. Finally, we store the body of the POST request into a file with the POSTed representation.
  6. We set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
 
 ```
@@ -167,11 +167,11 @@ env
 $ chmod +x POST
 $ curl -X POST -d "foo=bar&foos=ball" http://yoursite/
 foos=ball
-FSREST_CONTENT_TYPE=application.x-www-form-urlencoded
 PWD=/home/jekor/project/jekor.lan/www
 foo=bar
 SHLVL=1
 CONTENT_TYPE=application/x-www-form-urlencoded
+...
 ```
 
 `PWD`, `SHLVL`, and `_` are 3 environment variables that are set by Bash.
