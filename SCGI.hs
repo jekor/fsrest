@@ -11,8 +11,9 @@ import Control.Monad.State (StateT, runStateT, MonadState, modify)
 import Data.Attoparsec.ByteString.Char8 (Parser, IResult(..), parseOnly, parseWith, char, decimal, take, takeTill)
 import Data.Attoparsec.Combinator (many1)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as B8
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 ()
 import Data.Char (toUpper)
 import Data.CaseInsensitive (CI)
 import qualified Data.CaseInsensitive as CI

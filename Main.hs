@@ -11,7 +11,8 @@ import qualified Data.ByteString.UTF8 as UTF8
 import qualified Data.ByteString.Lazy.UTF8 as UTF8L
 import Data.List (find)
 import Data.Maybe (fromMaybe, isJust)
-import Network (listenOn, accept, PortID(..))
+import Network (accept)
+import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode(..))
@@ -19,7 +20,7 @@ import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparato
 import System.IO (hPutStrLn, stderr, hClose)
 import System.IO.Error (tryIOError)
 import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
-import System.Process (readProcess, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
+import System.Process (readProcessWithExitCode, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
 import SCGI (SCGI, Body, Response(..))
 import qualified SCGI
@@ -30,13 +31,22 @@ main = do
   args <- getArgs
   case args of
     [dir, port] -> do
-      let portNum = read port :: Integer
-      socket <- listenOn (PortNumber (fromIntegral portNum))
+      s <- listenLocal port
       forever $ do
-        (handle, _, _) <- accept socket
+        (handle, _, _) <- accept s
         _ <- forkIO (tryIOError (SCGI.runRequest handle $ handleRequest dir) >> hClose handle)
         return ()
     _     -> hPutStrLn stderr "fsrest <directory> <port>"
+
+-- Listen on an IPv4 port on the local host.
+-- Since this is an SCGI program, I haven't had the need to listen on any other interfaces or protocols.
+listenLocal :: String -> IO Socket
+listenLocal port = do
+  addrs <- getAddrInfo Nothing (Just "127.0.0.1") (Just port)
+  s <- socket AF_INET Stream defaultProtocol
+  bind s $ addrAddress $ head addrs
+  listen s 5
+  return s
 
 handleRequest :: FilePath -> Body -> SCGI Response
 handleRequest dir body = do
@@ -140,14 +150,18 @@ resourcePostFile dirname = do
 
 outputRepresentation :: FilePath -> Representation -> SCGI Response
 outputRepresentation dirname r = do
+  SCGI.setHeader "Content-Type" $ repContentType r `B.append` "; charset=utf-8"
   perms' <- liftIO $ getPermissions $ dirname </> repPath r
-  -- TODO: Need to support passing a status back.
   if executable perms'
     then do
       liftIO $ setCurrentDirectory dirname
-      return . Response "200 OK" . UTF8L.fromString =<< liftIO (readProcess (dirname </> repPath r) [] "")
+      -- TODO: Read the process output as a bytestring.
+      -- TODO: Support setting headers.
+      (exit, out, err) <- liftIO $ readProcessWithExitCode (dirname </> repPath r) [] ""
+      case exit of
+        ExitSuccess -> return $ Response "200 OK" $ UTF8L.fromString out
+        _           -> return $ Response "500 Internal Server Error" $ UTF8L.fromString err
     else do
-      SCGI.setHeader "Content-Type" $ repContentType r `B.append` "; charset=utf-8"
       return . Response "200 OK" =<< liftIO (BL.readFile $ dirname </> repPath r)
 
 outputMultipleChoices :: [Representation] -> SCGI Response

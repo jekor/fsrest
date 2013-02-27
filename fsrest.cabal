@@ -1,5 +1,5 @@
 Name:          fsrest
-Version:       0.1.2
+Version:       0.2.0
 Cabal-Version: >= 1.2
 License:       GPL
 License-File:  COPYING
@@ -27,7 +27,7 @@ Executable fsrest
                  filepath,
                  Glob,
                  mtl,
-                 network,
+                 network >= 2.4,
                  process,
                  text,
                  transformers,
