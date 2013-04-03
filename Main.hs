@@ -13,6 +13,8 @@ import Data.List (find)
 import Data.Maybe (fromMaybe, isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
+import Network.SCGI (SCGI, Body, Response(..))
+import qualified Network.SCGI as SCGI
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode(..))
@@ -22,8 +24,6 @@ import System.IO.Error (tryIOError)
 import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
 import System.Process (readProcessWithExitCode, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
-import SCGI (SCGI, Body, Response(..))
-import qualified SCGI
 import Negotiation
 
 main :: IO ()

@@ -21,18 +21,15 @@ Executable fsrest
   Build-Depends: base >= 4,
                  attoparsec,
                  bytestring,
-                 case-insensitive,
-                 containers,
                  directory,
                  filepath,
                  Glob,
-                 mtl,
                  network >= 2.4,
                  process,
+                 sscgi,
                  text,
                  transformers,
                  unix,
                  utf8-string
-  Extensions:    GeneralizedNewtypeDeriving,
-                 OverloadedStrings
+  Extensions:    OverloadedStrings
   GHC-Options:   -Wall -fno-warn-type-defaults -threaded -O2
