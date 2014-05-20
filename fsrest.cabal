@@ -23,7 +23,7 @@ Executable fsrest
                  case-insensitive,
                  directory,
                  filepath,
-                 http-kit,
+                 http-kit >= 0.4,
                  http-types,
                  Glob,
                  network >= 2.4,
