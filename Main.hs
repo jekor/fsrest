@@ -53,7 +53,7 @@ listen' address port = do
 serveClient :: Handle -> FilePath -> IO ()
 serveClient h dir = do
   conn <- connectionFromHandle h
-  forever $ (readRequest conn) >>= \ request@(Request method url _ _) ->
+  forever $ readRequest conn >>= \ request@(Request method url _ _) ->
     case URI.parseURIReference $ BU.toString url of
       Nothing -> reply $ Response status500 [] "Failed to parse request URI"
       Just uri -> do
@@ -161,7 +161,7 @@ representation dirname r = do
       case exit of
         ExitSuccess -> return $ Response status200 headers (BLU.fromString out)
         _           -> return $ Response status500 [] (BLU.fromString err)
-    else Response status200 headers `fmap` (BL.readFile $ dirname </> repPath r)
+    else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)
 
 multipleChoices :: [Representation] -> Response BL.ByteString
 multipleChoices rs = Response status300 [] (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
@@ -173,4 +173,4 @@ sendLazyResponse send (Response status headers body) = do
   send $ chunk ""
  where headers' = ("Transfer-Encoding", "Chunked") : headers
        chunk :: B.ByteString -> B.ByteString
-       chunk s = (BU.fromString $ showHex (B.length s) "") `B.append` "\r\n" `B.append` s `B.append` "\r\n"
+       chunk s = foldr B.append "" [BU.fromString $ showHex (B.length s) "", "\r\n", s, "\r\n"]

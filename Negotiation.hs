@@ -36,7 +36,7 @@ matches available accept =
     Left _ -> [] -- TODO: Log an error?
     -- For now, only negotiate the content type.
     Right acceptable -> mapMaybe (`match` ordered) available
-                         where ordered = reverse $ sortBy (compare `on` snd) acceptable
+                         where ordered = sortBy (flip compare `on` snd) acceptable
                                match :: B.ByteString -> [(B.ByteString, Quality)] -> Maybe (B.ByteString, Quality)
                                match rep reps = case find (\(r, _) -> G.match (G.compile $ B8.unpack r) (B8.unpack rep)) reps of
                                                   Nothing -> Nothing
@@ -52,5 +52,5 @@ best ms = let highest = snd $ maximumBy (compare `on` snd) ms in
 -- e.g. text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
 acceptParser :: Parser [(B.ByteString, Quality)]
 acceptParser = ((,) <$> (skipSpace *> takeTill (inClass ";, "))
-                    <*> (option 1.0 (skipSpace *> char ';' *> skipSpace *> string "q=" *> rational)))
+                    <*> option 1.0 (skipSpace *> char ';' *> skipSpace *> string "q=" *> rational))
                `sepBy` (skipSpace *> char ',' <* skipSpace)
