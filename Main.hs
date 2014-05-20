@@ -1,7 +1,7 @@
 -- Copyright 2012, 2013, 2014 Chris Forno
 
 import Control.Arrow ((***))
-import Control.Concurrent (forkIO, myThreadId)
+import Control.Concurrent (forkIO)
 import Control.Exception (finally, handle, SomeException)
 import Control.Monad (filterM, forever, void)
 import qualified Data.ByteString as B
@@ -10,14 +10,14 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.CaseInsensitive as CI
-import Data.List (find, lookup)
+import Data.List (find)
 import Data.Maybe (fromMaybe, isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
-import Network.HTTP.Toolkit (Connection, connectionFromHandle, makeConnection, readRequest, Request(..), Response(..), simpleResponse, sendResponse, BodyReader, sendBody)
+import Network.HTTP.Toolkit (connectionFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
-import Network.HTTP.Types (status200, status300, status404, status500, methodGet, methodPost, hAccept)
+import Network.HTTP.Types (status200, status300, status404, status500, hAccept)
 import qualified Network.URI as URI
 import Numeric (showHex)
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
@@ -53,25 +53,22 @@ listen' address port = do
 serveClient :: Handle -> FilePath -> IO ()
 serveClient h dir = do
   conn <- connectionFromHandle h
-  forever $ (readRequest conn) >>= \request -> case request of
-    Request method url headers body ->
-      case URI.parseURIReference $ BU.toString url of
-        Nothing -> reply $ Response status500 [] "Failed to parse request URI"
-        Just uri -> do
-          let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
-          exists <- doesDirectoryExist dirname
-          if exists
-            then do
-              perms <- getPermissions dirname
-              if readable perms
-                then
-                  case method of
-                    "GET"  -> reply =<< handleGet request dirname
-                    "POST" -> reply =<< handlePost request dirname
-                    _ -> reply notFound
-                else reply notFound
-            else reply notFound
-    _ -> hPutStrLn stderr "Not a request"
+  forever $ (readRequest conn) >>= \ request@(Request method url _ _) ->
+    case URI.parseURIReference $ BU.toString url of
+      Nothing -> reply $ Response status500 [] "Failed to parse request URI"
+      Just uri -> do
+        let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
+        exists <- doesDirectoryExist dirname
+        if exists
+          then do
+            perms <- getPermissions dirname
+            if readable perms
+              then case method of
+                     "GET"  -> reply =<< handleGet request dirname
+                     "POST" -> reply =<< handlePost request dirname
+                     _ -> reply notFound
+              else reply notFound
+          else reply notFound
  where sendToClient = B.hPutStr h
        reply = sendLazyResponse sendToClient
 
@@ -80,8 +77,8 @@ notFound = Response status404 [] "Not Found"
 handleGet :: Request a -> FilePath -> IO (Response BL.ByteString)
 handleGet request dirname = do
   reps <- availableRepresentations dirname
-  let accept = lookup hAccept (requestHeaders request) 
-      bests = case accept of
+  let acceptable = lookup hAccept (requestHeaders request) 
+      bests = case acceptable of
                 Nothing -> reps
                 Just a  -> let bests' = best $ matches (map repContentType reps) a in
                              filter (\r -> isJust $ find (== repContentType r) bests') reps
