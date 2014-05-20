@@ -1,125 +1,127 @@
--- Copyright 2012, 2013 Chris Forno
+-- Copyright 2012, 2013, 2014 Chris Forno
 
 import Control.Arrow ((***))
-import Control.Concurrent (forkIO)
-import Control.Monad (filterM, forever)
-import Control.Monad.IO.Class (liftIO)
+import Control.Concurrent (forkIO, myThreadId)
+import Control.Exception (finally, handle, SomeException)
+import Control.Monad (filterM, forever, void)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.UTF8 as UTF8
-import qualified Data.ByteString.Lazy.UTF8 as UTF8L
-import Data.List (find)
+import qualified Data.ByteString.UTF8 as BU
+import qualified Data.ByteString.Lazy.UTF8 as BLU
+import qualified Data.CaseInsensitive as CI
+import Data.List (find, lookup)
 import Data.Maybe (fromMaybe, isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
-import Network.SCGI (SCGI, Body, Response(..))
-import qualified Network.SCGI as SCGI
+import Network.HTTP.Toolkit (Connection, connectionFromHandle, makeConnection, readRequest, Request(..), Response(..), simpleResponse, sendResponse, BodyReader, sendBody)
+import Network.HTTP.Toolkit.Header (sendHeader)
+import Network.HTTP.Toolkit.Response (formatStatusLine)
+import Network.HTTP.Types (status200, status300, status404, status500, methodGet, methodPost, hAccept)
+import qualified Network.URI as URI
+import Numeric (showHex)
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..))
 import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparator)
-import System.IO (hPutStrLn, stderr, hClose)
-import System.IO.Error (tryIOError)
+import System.IO (Handle, hPutStrLn, stderr, hClose)
 import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
 import System.Process (readProcessWithExitCode, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
 import Negotiation
 
-main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [dir, port] -> do
-      s <- listenLocal port
+    [dir, address, port] -> do
+      s <- listen' address port
       forever $ do
-        (handle, _, _) <- accept s
-        _ <- forkIO (tryIOError (SCGI.runRequest handle $ handleRequest dir) >> hClose handle)
-        return ()
-    _     -> hPutStrLn stderr "fsrest <directory> <port>"
+        (h, _, _) <- accept s
+        void $ forkIO (finally (serveClient h dir) (hClose h))
+    _ -> do
+      program <- getProgName
+      hPutStrLn stderr $ program ++ " <directory> <address> <port>"
 
--- Listen on an IPv4 port on the local host.
--- Since this is an SCGI program, I haven't had the need to listen on any other interfaces or protocols.
-listenLocal :: String -> IO Socket
-listenLocal port = do
-  addrs <- getAddrInfo Nothing (Just "127.0.0.1") (Just port)
+listen' :: String -> String -> IO Socket
+listen' address port = do
+  addrs <- getAddrInfo Nothing (Just address) (Just port)
   s <- socket AF_INET Stream defaultProtocol
   bind s $ addrAddress $ head addrs
-  listen s 5
+  listen s 5 -- maximum number of queued connections '5' should be fine
   return s
 
-handleRequest :: FilePath -> Body -> SCGI Response
-handleRequest dir body = do
-  path' <- SCGI.path
-  case path' of
-    Nothing -> output404
-    Just path -> do
-      let dirname = dir ++ dropTrailingPathSeparator (UTF8.toString path)
-      exists <- liftIO $ doesDirectoryExist dirname
-      if exists
-        then do
-          perms <- liftIO $ getPermissions dirname
-          if readable perms
-             then do
-               method <- SCGI.method
-               case method of
-                 Just "GET" -> handleGet dirname
-                 Just "POST" -> handlePost dirname body
-                 _ -> output404
-                 -- TODO: Support 405 Method Not Allowed.
-             else return $ Response "403 Forbidden" ""
-        else output404
+serveClient :: Handle -> FilePath -> IO ()
+serveClient h dir = do
+  conn <- connectionFromHandle h
+  forever $ (readRequest conn) >>= \request -> case request of
+    Request method url headers body ->
+      case URI.parseURIReference $ BU.toString url of
+        Nothing -> reply $ Response status500 [] "Failed to parse request URI"
+        Just uri -> do
+          let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
+          exists <- doesDirectoryExist dirname
+          if exists
+            then do
+              perms <- getPermissions dirname
+              if readable perms
+                then
+                  case method of
+                    "GET"  -> reply =<< handleGet request dirname
+                    "POST" -> reply =<< handlePost request dirname
+                    _ -> reply notFound
+                else reply notFound
+            else reply notFound
+    _ -> hPutStrLn stderr "Not a request"
+ where sendToClient = B.hPutStr h
+       reply = sendLazyResponse sendToClient
 
-handleGet :: FilePath -> SCGI Response
-handleGet dirname = do
-  accept' <- SCGI.header "HTTP_ACCEPT"
-  reps <- liftIO $ availableRepresentations dirname
-  let bests = case accept' of
+notFound = Response status404 [] "Not Found"
+
+handleGet :: Request a -> FilePath -> IO (Response BL.ByteString)
+handleGet request dirname = do
+  reps <- availableRepresentations dirname
+  let accept = lookup hAccept (requestHeaders request) 
+      bests = case accept of
                 Nothing -> reps
                 Just a  -> let bests' = best $ matches (map repContentType reps) a in
                              filter (\r -> isJust $ find (== repContentType r) bests') reps
   case bests of
-    [] -> output404
-    [r] -> outputRepresentation dirname r
-    rs -> do
-      -- Disambiguate with a GET symlink if it exists.
-      link' <- liftIO $ tryIOError $ readSymbolicLink $ dirname </> "GET"
-      case link' of
-        Right link -> case find ((== link) . repPath) rs of
-                        Nothing -> outputMultipleChoices rs
-                        Just r -> outputRepresentation dirname r
-        _ -> outputMultipleChoices rs
+    [] -> return notFound
+    [r] -> representation dirname r
+    rs ->
+      -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
+      handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
+        link <- readSymbolicLink $ dirname </> "GET"
+        case find ((== link) . repPath) rs of
+          Nothing -> return $ multipleChoices rs
+          Just r -> representation dirname r
 
-handlePost :: FilePath -> Body -> SCGI Response
-handlePost dirname body = do
-  postPath <- liftIO $ resourcePostFile dirname
+handlePost :: Request BodyReader -> FilePath -> IO (Response BL.ByteString)
+handlePost (Request _ _ headers body) dirname = do
+  postPath <- resourcePostFile dirname
   case postPath of
-    Nothing -> output404
+    Nothing -> return notFound
     Just p  -> do
-      perms <- liftIO $ getPermissions p
+      perms <- getPermissions p
       if readable perms && executable perms
         then do
-          vars <- SCGI.allHeaders
-          (out, exitCode) <- liftIO $ do
+          (out, exitCode) <- do
             let proc' = (proc p []) { cwd = Just dirname
-                                    , env = Just (map (B8.unpack *** B8.unpack) vars)
+                                    , env = Just (map (B8.unpack . CI.original *** B8.unpack) headers)
                                     , std_in = CreatePipe
                                     , std_out = CreatePipe }
             (Just hin, Just hout, _, ph) <- createProcess proc'
-            BL.hPut hin body
+            sendBody (B.hPut hin) body
             out' <- BL.hGetContents hout
             exitCode' <- waitForProcess ph
             return (out', exitCode')
           case exitCode of
-            ExitSuccess   -> return $ Response "200 OK" out
-            ExitFailure _ -> return $ Response "500 Internal Server Error" out
-        else output404
+            ExitSuccess   -> return $ Response status200 [] out
+            ExitFailure _ -> return $ Response status500 [] "Internal Server Error"
+        else return notFound
 
 translate :: (Eq a) => [(a, a)] -> [a] -> [a]
 translate sr = map (\s -> fromMaybe s $ lookup s sr)
-
-output404 :: SCGI Response
-output404 = return $ Response "404 Resource Not Found" ""
 
 -- TODO: Charset and Language
 data Representation = Representation { repPath        :: FilePath
@@ -129,7 +131,7 @@ data Representation = Representation { repPath        :: FilePath
 -- TODO: Support mime types with dots in them (only replace the first one).
 fileRepresentation :: FilePath -> IO Representation
 fileRepresentation path = return Representation { repPath        = path
-                                                , repContentType = UTF8.fromString $ translate [('.', '/')] $ takeFileName path }
+                                                , repContentType = BU.fromString $ translate [('.', '/')] $ takeFileName path }
 
 availableRepresentations :: FilePath -> IO [Representation]
 availableRepresentations dirname =
@@ -148,21 +150,30 @@ resourcePostFile dirname = do
   exists <- fileExist path
   return (if exists then Just $ normalise path else Nothing)
 
-outputRepresentation :: FilePath -> Representation -> SCGI Response
-outputRepresentation dirname r = do
-  SCGI.setHeader "Content-Type" $ repContentType r `B.append` "; charset=utf-8"
-  perms' <- liftIO $ getPermissions $ dirname </> repPath r
+representation :: FilePath -> Representation -> IO (Response BL.ByteString)
+representation dirname r = do
+  let contentType = repContentType r `B.append` "; charset=utf-8"
+      headers = [("Content-Type", contentType)]
+  perms' <- getPermissions $ dirname </> repPath r
   if executable perms'
     then do
-      liftIO $ setCurrentDirectory dirname
-      -- TODO: Read the process output as a bytestring.
+      setCurrentDirectory dirname
+      -- TODO: Read the process output lazily as a bytestring.
       -- TODO: Support setting headers.
-      (exit, out, err) <- liftIO $ readProcessWithExitCode (dirname </> repPath r) [] ""
+      (exit, out, err) <- readProcessWithExitCode (dirname </> repPath r) [] ""
       case exit of
-        ExitSuccess -> return $ Response "200 OK" $ UTF8L.fromString out
-        _           -> return $ Response "500 Internal Server Error" $ UTF8L.fromString err
-    else do
-      return . Response "200 OK" =<< liftIO (BL.readFile $ dirname </> repPath r)
+        ExitSuccess -> return $ Response status200 headers (BLU.fromString out)
+        _           -> return $ Response status500 [] (BLU.fromString err)
+    else Response status200 headers `fmap` (BL.readFile $ dirname </> repPath r)
 
-outputMultipleChoices :: [Representation] -> SCGI Response
-outputMultipleChoices rs = return $ Response "300 Multiple Choices" $ BL.fromChunks [B.intercalate "\n" $ map repContentType rs]
+multipleChoices :: [Representation] -> Response BL.ByteString
+multipleChoices rs = Response status300 [] (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
+
+sendLazyResponse :: (B.ByteString -> IO ()) -> Response BL.ByteString -> IO ()
+sendLazyResponse send (Response status headers body) = do
+  sendHeader send (formatStatusLine status) headers'
+  mapM_ (send . chunk) $ BL.toChunks body
+  send $ chunk ""
+ where headers' = ("Transfer-Encoding", "Chunked") : headers
+       chunk :: B.ByteString -> B.ByteString
+       chunk s = (BU.fromString $ showHex (B.length s) "") `B.append` "\r\n" `B.append` s `B.append` "\r\n"

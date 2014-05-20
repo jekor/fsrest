@@ -176,40 +176,15 @@ CONTENT_TYPE=application/x-www-form-urlencoded
 
 `PWD`, `SHLVL`, and `_` are 3 environment variables that are set by Bash.
 
-# How to Install
+# Getting Started
 
-## Build the SCGI executable
+Build fsrest with `cabal install`.
 
- 1. Install dependencies.
-    1. [GHC](http://www.haskell.org/ghc/) version 7 or later (I've tested fsrest with version 7.4.1.)
-    2. [Cabal](http://www.haskell.org/cabal/) version 1.2 or later
-    3. The scgi library (`cabal install scgi`).
- 2. `make`
- 3. You should now have an `fsrest` executable.
-
-## Working with a Web Server
-
-Currently fsrest builds as an SCGI program. This keeps development simple (avoiding HTTP minutiae, etc.). You need to proxy requests to it from a web server that supports SCGI. For example, with [lighttpd](http://www.lighttpd.net/):
+Point fsrest to the directory that you want to serve and give it an address and port number to listen on:
 
 ```
-$HTTP["host"] == "yourdomain.com" {
-  scgi.server = (
-    "/" => ((
-      "host" => "127.0.0.1",
-      "port" => 10035,
-      "check-local" => "disable"
-    ))
-  )
-}
+fsrest /var/www 0.0.0.0 80
 ```
-
-Chose any port number you like, it just has to match what you started fsrest with. For example, if the directory you would like to serve is at `/var/www` and you're using the above lighttpd configuration, you would start fsrest like:
-
-```
-fsrest /var/www 10035
-```
-
-Note that fsrest runs in the foreground. If you want to run it as a daemon, I suggest using something like [runit](http://smarden.org/runit/).
 
 # Limitations
 
@@ -218,51 +193,9 @@ Here are some current limitations that might be removed in later versions.
  - `PUT`, `DELETE`, etc. are not implemented.
  - Language negotiation based on `Accept-Language` is not implemented.
 
-Note that content negotiation is a bit broken in the haskell cgi library. I've also made a minor change to how it works to handle ambiguous negotiation results. You'll need the following patch to fix it:
-
-```
-diff --git a/Network/CGI.hs b/Network/CGI.hs
-index 2d1faeb..0cfdd66 100644
---- a/Network/CGI.hs
-+++ b/Network/CGI.hs
-@@ -205,7 +205,7 @@ outputError c m es =
-              htmlType = ContentType "text" "html"  [("charset","ISO-8859-1")]
-          cts <- liftM (negotiate [htmlType,textType]) requestAccept
-          case cts of
--           ct:_ | ct == textType -> 
-+           (ct,_):_ | ct == textType -> 
-                 do setHeader "Content-type" (showContentType textType)
-                    text <- errorText c m es
-                    output text
-diff --git a/Network/CGI/Accept.hs b/Network/CGI/Accept.hs
-index bde8939..60284f0 100644
---- a/Network/CGI/Accept.hs
-+++ b/Network/CGI/Accept.hs
-@@ -48,15 +48,12 @@ starOrEqualTo :: String -> String -> Bool
- starOrEqualTo x y = x == "*" || x == y
- 
- 
--negotiate :: Acceptable a => [a] -> Maybe (Accept a) -> [a]
--negotiate ys Nothing = ys
--negotiate ys (Just xs) = reverse [ z | (q,z) <- sortBy (compare `on` fst) [ (quality xs y,y) | y <- ys], q > 0]
--
----testNegotiate :: (HeaderValue a, Acceptable a) => [String] -> String -> [a]
----testNegotiate ts a = negotiate [t | Just t <- map (parseM parseHeaderValue "<source>") ts] (parseM parseHeaderValue "<source>" a)
-+negotiate :: Acceptable a => [a] -> Maybe (Accept a) -> [(a, Quality)]
-+negotiate ys Nothing = map (flip (,) 1.0) ys
-+negotiate ys (Just xs) = reverse [ (z,q) | (q,z) <- sortBy (compare `on` fst) [ (quality xs y,y) | y <- ys], q > 0]
- 
- quality :: Acceptable a => Accept a -> a -> Quality
--quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
-+quality (Accept xs) y = fromMaybe 0 $ listToMaybe $ reverse $ sort $ map snd $ sortBy (compareSpecificity `on` fst) $ filter ((`includes` y) . fst) xs
- 
- compareSpecificity :: Acceptable a => a -> a -> Ordering
- compareSpecificity x y 
-```
-
 # Common Problems
 
-## `scgi: readProcess: some.file  (exit 127): failed`
+## `fsrest: readProcess: some.file  (exit 127): failed`
 
 This is probably happening because the file is marked as executable and fsrest is trying to execute it (and failing).
 
