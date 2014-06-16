@@ -14,7 +14,7 @@ import Data.List (find)
 import Data.Maybe (fromMaybe, isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
-import Network.HTTP.Toolkit (connectionFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
+import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
 import Network.HTTP.Types (status200, status300, status404, status500, hAccept)
@@ -52,8 +52,8 @@ listen' address port = do
 
 serveClient :: Handle -> FilePath -> IO ()
 serveClient h dir = do
-  conn <- connectionFromHandle h
-  forever $ readRequest conn >>= \ request@(Request method url _ _) ->
+  conn <- inputStreamFromHandle h
+  forever $ readRequest True conn >>= \ request@(Request method url _ _) ->
     case URI.parseURIReference $ BU.toString url of
       Nothing -> reply $ Response status500 [] "Failed to parse request URI"
       Just uri -> do
