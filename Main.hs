@@ -11,7 +11,7 @@ import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.CaseInsensitive as CI
 import Data.List (find)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
 import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
@@ -117,18 +117,20 @@ handlePost (Request _ _ headers body) dirname = do
             ExitFailure _ -> return $ Response status500 [] "Internal Server Error"
         else return notFound
 
-translate :: (Eq a) => [(a, a)] -> [a] -> [a]
-translate sr = map (\s -> fromMaybe s $ lookup s sr)
-
 -- TODO: Charset and Language
 data Representation = Representation { repPath        :: FilePath
                                      , repContentType :: B.ByteString }
                       deriving (Show, Eq)
 
--- TODO: Support mime types with dots in them (only replace the first one).
 fileRepresentation :: FilePath -> IO Representation
 fileRepresentation path = return Representation { repPath        = path
-                                                , repContentType = BU.fromString $ translate [('.', '/')] $ takeFileName path }
+                                                , repContentType = BU.fromString $ tr1 [('.', '/')] $ takeFileName path }
+ where tr1 :: (Eq a) => [(a, a)] -> [a] -> [a]
+       tr1 _ [] = []
+       tr1 replacements (x:xs) =
+         case lookup x replacements of
+           Nothing -> x : tr1 replacements xs
+           Just replacement -> replacement : xs
 
 availableRepresentations :: FilePath -> IO [Representation]
 availableRepresentations dirname =
