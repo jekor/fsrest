@@ -10,7 +10,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.CaseInsensitive as CI
-import Data.List (find)
+import Data.List (find, elemIndex)
 import Data.Maybe (isJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
@@ -136,11 +136,20 @@ availableRepresentations :: FilePath -> IO [Representation]
 availableRepresentations dirname =
   mapM fileRepresentation =<< filterM usable =<< getDirectoryContents dirname
  where usable :: FilePath -> IO Bool
-       usable p = do
-         exists <- doesFileExist (dirname </> p)
-         if exists
-            then fileAccess (dirname </> p) True False False
-            else return False
+       usable p =
+         -- Mime types look like "text/html" and "text/vnd.abc". On the
+         -- filesystem they'll look like "text.html" and "text.vnd.abc". So to
+         -- determine which files are possible representations, we just have to
+         -- look for at least 1 dot. However, we need to ignore hidden files
+         -- like ".gitignore" or we'll get confusing results. To do that, we'll
+         -- just check for at least 1 dot beyond the first character.
+         case elemIndex '.' p of
+           Just i | i > 0 -> do
+             exists <- doesFileExist (dirname </> p)
+             if exists
+               then fileAccess (dirname </> p) True False False
+               else return False
+           _ -> return False
 
 resourcePostFile :: FilePath -> IO (Maybe FilePath)
 resourcePostFile dirname = do
