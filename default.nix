@@ -1,7 +1,7 @@
-{ pkgs ? import <nixpkgs> {}
+{ buildLocalCabal ? (import <nixpkgs> {}).haskellPackages.buildLocalCabal
 , src ? ./.
 }:
 
 {
-  build = pkgs.haskellPackages.buildLocalCabal src "fsrest";
+  build = buildLocalCabal src "fsrest";
 }

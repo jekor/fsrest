@@ -1,5 +1,5 @@
 Name:          fsrest
-Version:       0.3.2
+Version:       0.3.3
 Cabal-Version: >= 1.2
 License:       MIT
 License-File:  LICENSE
@@ -14,6 +14,7 @@ Synopsis:      filesystem-based RESTful HTTP server
 Description:   fsrest is a webserver that encourages and assists with RESTful website/service design, provides pretty URLs for static files, and enables dynamic sites without databases
 Tested-With:   GHC == 7.8.2
 Build-Type:    Simple
+Data-Files:    module.nix
 
 Executable fsrest
   Main-Is:       Main.hs
