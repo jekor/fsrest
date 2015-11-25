@@ -2,7 +2,6 @@
 
 module Negotiation (matches, best, Quality) where
 
-import Control.Applicative ((<$>), (<*>), (<*), (*>))
 import Data.Attoparsec.ByteString.Char8 (Parser, parseOnly, char, string, skipSpace, takeTill, inClass, rational)
 import Data.Attoparsec.Combinator (sepBy, option)
 import qualified Data.ByteString as B

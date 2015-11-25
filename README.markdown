@@ -202,3 +202,17 @@ This is probably happening because the file is marked as executable and fsrest i
 ## Multiple Choices
 
 If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to `GET`.
+
+# Building
+
+I build fsrest with [Nix](http://nixos.org/nix/) to try to ensure reproducible builds:
+
+```
+nix-build dev.nix
+```
+
+`default.nix` is for inclusion in a top-level file (such as `all-packages.nix`). `dev.nix` builds fsrest with a fixed version of nixpkgs, providing stability at the cost of inflating the nix store.
+
+# Installing on NixOS
+
+`module.nix` provides a way for you to declaratively install and configure fsrest on a [NixOS](http://nixos.org/) system.
