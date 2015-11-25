@@ -2,7 +2,7 @@
 
 let
 
-  inherit (lib) mkOption mkIf types;
+  inherit (lib) mkOption mkIf types optionalAttrs singleton;
   cfg = config.services.fsrest;
 
 in {
@@ -31,6 +31,16 @@ in {
         default = 80;
       };
 
+      user = mkOption {
+        default = "wwwrun";
+        description = "User account under which fsrest runs.";
+      };
+
+      group = mkOption {
+        default = "wwwrun";
+        description = "Group account under which fsrest runs.";
+      };
+
       package = mkOption {
         type = types.package;
         description = "The built fsrest package";
@@ -42,9 +52,24 @@ in {
     systemd.services.fsrest = {
       description = "fsrest web server";
       wantedBy = [ "multi-user.target" ];
-      serviceConfig.ExecStart = "${cfg.package}/bin/fsrest ${cfg.directory} ${cfg.address} ${toString cfg.port}";
-      serviceConfig.Restart = "on-failure";
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/fsrest ${cfg.directory} ${cfg.address} ${toString cfg.port}";
+        Restart = "on-failure";
+        User = cfg.user;
+        Group = cfg.group;
+      };
     };
+
+    users.extraUsers = optionalAttrs (cfg.user == "wwwrun") (singleton
+      { name = "wwwrun";
+        group = cfg.group;
+        uid = config.ids.uids.wwwrun;
+      });
+
+    users.extraGroups = optionalAttrs (cfg.group == "wwwrun") (singleton
+      { name = "wwwrun";
+        gid = config.ids.gids.wwwrun;
+      });
   };
 
 }
