@@ -18,7 +18,7 @@ Most modern websites are served by monolithic programs. These programs are usual
 
 ## The Right Tool for the Job
 
-fsrest isn't tied to a particular programming language. It's job is just to dispatch HTTP requests to the appropriate place. Mostly, it serves static files. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
+fsrest isn't tied to a particular programming language. Its job is just to dispatch HTTP requests to the appropriate place. Mostly, it serves static files. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
 
 ## RESTful by Design
 
@@ -57,7 +57,9 @@ Content-Type: text/html; charset="UTF-8"
 
 (Note that fsrest assumes UTF-8 for all text/* representations.)
 
-Here's another request:
+## Multiple Representations
+
+Here's another hypothetical request:
 
 ```
 GET /image/logo.gif HTTP/1.1
@@ -66,26 +68,28 @@ Accept-Encoding: gzip, deflate
 Accept-Language: en-us,en;q=0.5
 ```
 
-Now the HTTP client is requesting an image. It knows it's requesting an image (probably because it found the URL in an `<img>` `src` attribute), and it passes along details about the type of images it prefers and will accept. But the URL explicitly mentions logo.gif, and most likely the web server on the other end is going to ignore any `Accept` headers (since it can't do anything with it anyway: there's only 1 way to serve a GIF off the filesystem).
+This HTTP client is requesting an image. It knows it's requesting an image (probably because it found the URL in an `<img>` `src` attribute), and it passes along details about the type of images it prefers and will accept. But the URL explicitly mentions logo.gif, and most likely the web server on the other end is going to ignore any `Accept` headers (since it can't do anything with it anyway: there's only 1 way to serve a GIF off the filesystem).
 
-But wait, who needs pretty URLs for images? After all, how often are you going to see those in the address bar?
+With fsrest, we instead write the following HTML, leaving off a file extension:
 
-It's not about the URL being pretty, it's about it being flexible. You might remember the big patent scare surrounding GIFs in the 90s. Before PNGs gained popularity, most non-photographic images were served as GIFs. There was a panic that web masters were going to be sued by GIF patent holders, and there was a push to replace all GIFs with alternate image formats (such as JPEGs or PNGs). But this meant changing URLs as well. If you had an `<img src="/image/logo.gif">`, each place it was referenced would need to be replaced with `<img src="/image/logo.png">`. This might not have been a big deal, but it brings up the question: why not just serve the image at `/image/logo`? After all, the browser doesn't care about file extensions. However, the web server might. In fact, most web servers use the filename to determine the MIME type to send in the response to the client.
+```
+<img src="/image/logo" alt="logo" />
+```
 
-Say we want to serve a GIF image as `/image/logo`. With fsrest, we'd create a directory named `image/logo` at the top of our web root.
+Then, when the client requests the file, we can find a representation that best matches what the client wants. Maybe the client prefers PNG to GIF. To do this, first  we'd create a directory named `image/logo` at the top of our web root.
 
 ```
 $ mkdir -p image/logo
-$ mv ~/logo.gif image/logo/image.gif
+$ mv logo.gif image/logo/image.gif
 ```
 
 Now, when a client requests the resource at `/image/logo`, fsrest will serve the GIF with `Content-Type: image/gif`. To provide a PNG as well, just put an alternate representation of the image in the directory:
 
 ```
-$ mv ~/logo.png image/logo/image.png
+$ mv logo.png image/logo/image.png
 ```
 
-Now, when the client requests `/logo/image`, fsrest has 2 representations to choose from, and it will pick which to use based on the client's request. For example, if the client sends:
+At this point, when the client requests `/logo/image`, fsrest has 2 representations to choose from, and it will pick which to use based on the client's request. For example, if the client sends:
 
 ```
 GET /image/logo HTTP/1.1
@@ -98,10 +102,8 @@ fsrest will determine, based on the `Accept` header, that `image/png` is the for
 
 Remember that the filenames for each representation are actually the file's MIME type with the slash replaced by a dot. In each case so far it looks like we're just using file extensions, but fsrest is not looking at them that way. To really see this, let's add a 3rd representation of the image: a vector graphic.
 
-If you're familiar with vector graphics, you'll know that the advantage with them is that they can scale to a variety of sizes cleanly. With the increasing number of devices with high-resolution displays, they might soon become important. Let's add an SVG representation of the logo:
-
 ```
-$ mv ~/logo.svg image/logo/image.svg+xml
+$ mv logo.svg image/logo/image.svg+xml
 ```
 
 And here you can see a clearer example of how fsrest looks at file names. The MIME type for SVG files is `image/svg+xml`. fsrest doesn't have a registry of MIME types; it simply looks at file names. You could create `image/logo/foo.bar` and if it were served back to the client, it would be sent as type `foo/bar`.
@@ -114,12 +116,6 @@ Let's say you'd like to allow POSTing comments on the front page of your site. T
 
 ```
 $ mkdir comments
-```
-
-Right now there are no comments. But the comments resource should exist rather than give a 404. Even though we're not explicitly linking to `/comments`, let's try to keep resources meaningful.
-
-```
-$ echo "" > comments/text.plain
 ```
 
 How are we going to post comments? Well, ignoring all the complexities of security and input validation, let's simply put the POSTed body into a new subordinate comment resource. Let's number each comment starting from 1.
@@ -178,13 +174,17 @@ CONTENT_TYPE=application/x-www-form-urlencoded
 
 # Getting Started
 
-Build fsrest with `cabal install`.
+Build fsrest with `cabal install` or with `nix-build dev.nix`.
 
-Point fsrest to the directory that you want to serve and give it an address and port number to listen on:
+Start fsrest and provide it with the directory that you want to serve and give it an address and port number to listen on:
 
 ```
 fsrest /var/www 0.0.0.0 80
 ```
+
+## Installing on NixOS
+
+`module.nix` provides a way for you to declaratively install and configure fsrest on a [NixOS](http://nixos.org/) system.
 
 # Limitations
 
@@ -202,17 +202,3 @@ This is probably happening because the file is marked as executable and fsrest i
 ## Multiple Choices
 
 If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to `GET`.
-
-# Building
-
-I build fsrest with [Nix](http://nixos.org/nix/) to try to ensure reproducible builds:
-
-```
-nix-build dev.nix
-```
-
-`default.nix` is for inclusion in a top-level file (such as `all-packages.nix`). `dev.nix` builds fsrest with a fixed version of nixpkgs, providing stability at the cost of inflating the nix store.
-
-# Installing on NixOS
-
-`module.nix` provides a way for you to declaratively install and configure fsrest on a [NixOS](http://nixos.org/) system.
