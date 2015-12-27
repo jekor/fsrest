@@ -10,19 +10,20 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.CaseInsensitive as CI
+import Data.CaseInsensitive (CI)
 import Data.List (find, elemIndex)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, fromJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
 import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
-import Network.HTTP.Types (status200, status300, status404, status500, hAccept)
+import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
 import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs, getProgName)
-import System.Exit (ExitCode(..))
+import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparator)
 import System.IO (Handle, hPutStrLn, stderr, hClose)
 import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
@@ -40,7 +41,8 @@ main = do
         void $ forkIO (finally (serveClient h dir) (hClose h))
     _ -> do
       program <- getProgName
-      hPutStrLn stderr $ program ++ " <directory> <address> <port>"
+      hPutStrLn stderr $ "Usage: " ++ program ++ " <directory> <address> <port>"
+      exitWith (ExitFailure 1)
 
 listen' :: String -> String -> IO Socket
 listen' address port = do
@@ -58,64 +60,95 @@ serveClient h dir = do
       Nothing -> reply $ Response status500 [] "Failed to parse request URI"
       Just uri -> do
         let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
-        exists <- doesDirectoryExist dirname
-        if exists
-          then do
-            perms <- getPermissions dirname
-            if readable perms
-              then case method of
-                     "GET"  -> reply =<< handleGet request dirname
-                     "POST" -> reply =<< handlePost request dirname
-                     _ -> reply notFound
-              else reply notFound
-          else reply notFound
+        opts <- options dirname
+        case CI.mk method of
+          "OPTIONS" -> reply (if null opts
+                                then notFound
+                                else Response status200 [("Allow", B.intercalate ", " opts)] "")
+          method' -> if method' `elem` map CI.mk opts
+                       then reply =<< handleRequest method' request dirname
+                       else reply (Response status405 [("Allow", B.intercalate ", " opts)] "")
  where sendToClient = B.hPutStr h
        reply = sendLazyResponse sendToClient
 
 notFound = Response status404 [] "Not Found"
 
-handleGet :: Request a -> FilePath -> IO (Response BL.ByteString)
-handleGet request dirname = do
-  reps <- availableRepresentations dirname
-  let acceptable = lookup hAccept (requestHeaders request) 
-      bests = case acceptable of
-                Nothing -> reps
-                Just a  -> let bests' = best $ matches (map repContentType reps) a in
-                             filter (\r -> isJust $ find (== repContentType r) bests') reps
-  case bests of
-    [] -> return notFound
-    [r] -> representation dirname r
-    rs ->
-      -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
-      handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
-        link <- readSymbolicLink $ dirname </> "GET"
-        case find ((== link) . repPath) rs of
-          Nothing -> return $ multipleChoices rs
-          Just r -> representation dirname r
+handleRequest :: CI Method -> Request BodyReader -> FilePath -> IO (Response BL.ByteString)
 
-handlePost :: Request BodyReader -> FilePath -> IO (Response BL.ByteString)
-handlePost (Request _ _ headers body) dirname = do
-  postPath <- resourcePostFile dirname
-  case postPath of
-    Nothing -> return notFound
-    Just p  -> do
-      perms <- getPermissions p
-      if readable perms && executable perms
-        then do
-          (out, exitCode) <- do
-            let proc' = (proc p []) { cwd = Just dirname
-                                    , env = Just (map (B8.unpack . CI.original *** B8.unpack) headers)
-                                    , std_in = CreatePipe
-                                    , std_out = CreatePipe }
-            (Just hin, Just hout, _, ph) <- createProcess proc'
-            sendBody (B.hPut hin) body
-            out' <- BL.hGetContents hout
-            exitCode' <- waitForProcess ph
-            return (out', exitCode')
-          case exitCode of
-            ExitSuccess   -> return $ Response status200 [] out
-            ExitFailure _ -> return $ Response status500 [] "Internal Server Error"
-        else return notFound
+handleRequest "GET" request dirname = do
+  reps <- availableRepresentations dirname
+  -- When the directory exists but there are no representations, we consider it missing.
+  if null reps
+    then return notFound
+    else
+      let acceptable = lookup hAccept (requestHeaders request) 
+          bests = case acceptable of
+                    Nothing -> reps
+                    Just a  -> let bests' = best $ matches (map repContentType reps) a in
+                                 filter (\r -> isJust $ find (== repContentType r) bests') reps
+      in case bests of
+        [] -> return (notAcceptable reps)
+        [r] -> representation dirname r
+        rs ->
+          -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
+          handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
+            link <- readSymbolicLink $ dirname </> "GET"
+            case find ((== link) . repPath) rs of
+              Nothing -> return $ multipleChoices rs
+              Just r -> representation dirname r
+ where repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
+                              (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
+       multipleChoices = repsResp status300
+       notAcceptable = repsResp status406
+
+handleRequest "POST" (Request _ _ headers body) dirname = do
+  -- We already checked that there's a script to handle POST in
+  -- `options`. This does unnecessary reads from the disk. We also
+  -- don't correctly handle any race conditions.
+  postPath <- fromJust `fmap` resourcePostFile dirname
+  (out, exitCode) <- do
+    let proc' = (proc postPath []) { cwd = Just dirname
+                                   , env = Just (map (B8.unpack . CI.original *** B8.unpack) headers)
+                                   , std_in = CreatePipe
+                                   , std_out = CreatePipe }
+    (Just hin, Just hout, _, ph) <- createProcess proc'
+    sendBody (B.hPut hin) body
+    out' <- BL.hGetContents hout
+    exitCode' <- waitForProcess ph
+    return (out', exitCode')
+  case exitCode of
+    ExitSuccess   -> return $ Response status200 [] out
+    ExitFailure _ -> return $ Response status500 [] "Internal Server Error"
+
+handleRequest _ _ _ = error "Unimplemented but allowed method. This shouldn't happen."
+
+-- Determine which methods are allowed on a given resource.
+options :: FilePath -> IO [Method]
+options dirname = do
+  exists <- doesDirectoryExist dirname
+  canRead <- if exists
+               then do
+                 perms <- getPermissions dirname
+                 return (readable perms)
+               else return False
+  reps <- if canRead
+            then availableRepresentations dirname
+            else return []
+  canPost <- isJust `fmap` resourcePostFile dirname
+  return (["GET" | canRead && not (null reps)] ++ ["POST" | canPost])
+
+resourcePostFile :: FilePath -> IO (Maybe FilePath)
+resourcePostFile dirname = do
+  -- TODO: Consider the POST Content-Type.
+  let path = dirname </> "POST"
+  exists <- fileExist path
+  if exists
+    then do
+      perms <- getPermissions path
+      return (if readable perms && executable perms
+                then Just (normalise path)
+                else Nothing)
+    else return Nothing
 
 -- TODO: Charset and Language
 data Representation = Representation { repPath        :: FilePath
@@ -151,13 +184,6 @@ availableRepresentations dirname =
                else return False
            _ -> return False
 
-resourcePostFile :: FilePath -> IO (Maybe FilePath)
-resourcePostFile dirname = do
-  -- TODO: Consider the POST Content-Type.
-  let path = dirname </> "POST"
-  exists <- fileExist path
-  return (if exists then Just $ normalise path else Nothing)
-
 representation :: FilePath -> Representation -> IO (Response BL.ByteString)
 representation dirname r = do
   let contentType = repContentType r `B.append` "; charset=utf-8"
@@ -173,9 +199,6 @@ representation dirname r = do
         ExitSuccess -> return $ Response status200 headers (BLU.fromString out)
         _           -> return $ Response status500 [] (BLU.fromString err)
     else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)
-
-multipleChoices :: [Representation] -> Response BL.ByteString
-multipleChoices rs = Response status300 [] (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
 
 sendLazyResponse :: (B.ByteString -> IO ()) -> Response BL.ByteString -> IO ()
 sendLazyResponse send (Response status headers body) = do
