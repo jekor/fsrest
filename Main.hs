@@ -19,7 +19,7 @@ import Network.HTTP.Toolkit.Response (formatStatusLine)
 import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
-import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (takeFileName, takeDirectory, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
@@ -33,7 +33,8 @@ import Negotiation
 main = do
   args <- getArgs
   case args of
-    [dir, address, port] -> do
+    [dir', address, port] -> do
+      dir <- makeAbsolute dir'
       s <- listen' address port
       forever $ do
         (h, _, _) <- accept s
