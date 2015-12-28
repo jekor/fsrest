@@ -1,7 +1,7 @@
 import Control.Arrow ((***))
 import Control.Concurrent (forkIO)
 import Control.Exception (finally, handle, SomeException)
-import Control.Monad (filterM, forever, void)
+import Control.Monad (filterM, forever, void, liftM2)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
@@ -19,7 +19,7 @@ import Network.HTTP.Toolkit.Response (formatStatusLine)
 import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
-import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory, makeAbsolute)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, doesDirectoryExist, setCurrentDirectory, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (takeFileName, takeDirectory, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
@@ -60,19 +60,26 @@ serveClient h dir = do
       Nothing -> reply $ Response status500 [] "Failed to parse request URI"
       Just uri -> do
         let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
-        opts <- options dirname
         case CI.mk method of
-          "OPTIONS" -> reply (if null opts
-                                then notFound
-                                else Response status200 [("Allow", B.intercalate ", " opts)] "")
-          method' | method' `elem` map CI.mk opts -> reply =<< handleRequest method' request dirname
-                    -- While correct to say that the GET method is not allowed
-                    -- for something that may be PUT, the more intuitive
-                    -- response is a 404.
-                  | null opts || opts == ["PUT"] -> reply notFound
-                  | otherwise -> reply (Response status405 [("Allow", B.intercalate ", " opts)] "")
+          "OPTIONS" -> do
+            opts <- options dirname
+            reply (if null opts
+                     then notFound
+                     else Response status200 [allowHeader opts] "")
+          method' -> do
+            allowed <- methodAllowed method' dirname
+            if allowed
+              then reply =<< handleRequest method' request dirname
+              else if method' == "GET"
+                     -- While technically correct to say that the GET method is not allowed,
+                     -- better to say that the resource is not found.
+                     then reply notFound
+                     else do
+                       opts <- options dirname
+                       reply (Response status405 [allowHeader opts] "")
  where sendToClient = B.hPutStr h
        reply = sendLazyResponse sendToClient
+       allowHeader opts = ("Allow", B.intercalate ", " opts)
 
 notFound = Response status404 [] "Not Found"
 
@@ -140,16 +147,22 @@ handleProcess request execPath args = do
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]
-options dirname = do
-  canRead <- perms [readable] dirname
-  reps <- if canRead
-            then availableRepresentations dirname
-            else return []
-  canPost <- isJust `fmap` resourceExecutable "POST" dirname
-  canPut <- isJust `fmap` resourceExecutable "PUT" dirname
-  canDelete <- isJust `fmap` resourceExecutable "DELETE" dirname
-  return (["GET" | canRead && not (null reps)] ++
-          ["POST" | canPost] ++ ["PUT" | canPut] ++ ["DELETE" | canDelete])
+options dirname = filterM (\ m -> methodAllowed (CI.mk m) dirname) ["GET", "POST", "PUT", "DELETE"]
+
+methodAllowed :: CI Method -> FilePath -> IO Bool
+methodAllowed method dirname =
+  case method of
+    "GET" -> do
+      canRead <- perms [readable] dirname
+      reps <- if canRead
+                then availableRepresentations dirname
+                else return []
+      return (canRead && not (null reps))
+    method' | method' `elem` ["POST", "PUT"] ->
+      isJust `fmap` resourceExecutable method dirname
+    "DELETE" -> doesDirectoryExist dirname <&&> (isJust `fmap` resourceExecutable "DELETE" dirname)
+    _ -> return False
+ where (<&&>) = liftM2 (&&)
 
 -- Return the executable file usable to carry out a given method on a
 -- resource (or Nothing if we do not have a way to carry out that
