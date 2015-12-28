@@ -69,24 +69,34 @@ serveClient h dir = do
           method' -> do
             allowed <- methodAllowed method' dirname
             if allowed
-              then reply =<< handleRequest method' request dirname
-              else if method' == "GET"
+              then do
+                response <- handleRequest method' request dirname
+                if method == "HEAD"
+                  then replyEmpty response
+                  else reply response
+              else if method' `elem` ["GET", "HEAD"]
                      -- While technically correct to say that the GET method is not allowed,
                      -- better to say that the resource is not found.
                      then reply notFound
                      else do
                        opts <- options dirname
                        reply (Response status405 [allowHeader opts] "")
- where sendToClient = B.hPutStr h
-       reply = sendLazyResponse sendToClient
-       allowHeader opts = ("Allow", B.intercalate ", " opts)
+ where allowHeader opts = ("Allow", B.intercalate ", " opts)
+       sendToClient = B.hPutStr h
+       reply (Response status headers body) = do
+         sendHeader sendToClient (formatStatusLine status) (headers ++ [("Transfer-Encoding", "Chunked")])
+         mapM_ (sendToClient . chunk) $ BL.toChunks body
+         sendToClient (chunk "")
+       chunk s = foldr B.append "" [BU.fromString $ showHex (B.length s) "", "\r\n", s, "\r\n"]
+       replyEmpty (Response status headers _) =
+         sendHeader sendToClient (formatStatusLine status) headers
 
 notFound = Response status404 [] "Not Found"
 
 handleRequest :: CI Method -> Request BodyReader -> FilePath -> IO (Response BL.ByteString)
 handleRequest method request dirname =
   case method of
-    "GET" -> do
+    method' | method' `elem` ["GET", "HEAD"] -> do
       reps <- availableRepresentations dirname
       -- When the directory exists but there are no representations, we consider it missing.
       if null reps
@@ -99,14 +109,14 @@ handleRequest method request dirname =
                                      filter (\r -> isJust $ find (== repContentType r) bests') reps
           in case bests of
             [] -> return (notAcceptable reps)
-            [r] -> representation dirname r
+            [r] -> reply' method' =<< representation dirname r
             rs ->
               -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
               handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
                 link <- readSymbolicLink $ dirname </> "GET"
                 case find ((== link) . repPath) rs of
                   Nothing -> return $ multipleChoices rs
-                  Just r -> representation dirname r
+                  Just r -> reply' method' =<< representation dirname r
     "POST" -> do
       -- We already checked that there's a file to handle POST in
       -- `options`. This does unnecessary reads from the disk. We also
@@ -128,6 +138,11 @@ handleRequest method request dirname =
                               (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
        multipleChoices = repsResp status300
        notAcceptable = repsResp status406
+       reply' method' response@(Response code headers _) =
+         case method' of
+           "GET" -> return response
+           "HEAD" -> return (Response code headers "")
+           _ -> undefined
 
 handleProcess request execPath args = do
   (out, exitCode) <- do
@@ -147,12 +162,12 @@ handleProcess request execPath args = do
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]
-options dirname = filterM (\ m -> methodAllowed (CI.mk m) dirname) ["GET", "POST", "PUT", "DELETE"]
+options dirname = filterM (\ m -> methodAllowed (CI.mk m) dirname) ["GET", "HEAD", "POST", "PUT", "DELETE"]
 
 methodAllowed :: CI Method -> FilePath -> IO Bool
 methodAllowed method dirname =
   case method of
-    "GET" -> do
+    method' | method' `elem` ["GET", "HEAD"] -> do
       canRead <- perms [readable] dirname
       reps <- if canRead
                 then availableRepresentations dirname
@@ -233,12 +248,3 @@ representation dirname r = do
         ExitSuccess -> return $ Response status200 headers (BLU.fromString out)
         _           -> return $ Response status500 [] (BLU.fromString err)
     else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)
-
-sendLazyResponse :: (B.ByteString -> IO ()) -> Response BL.ByteString -> IO ()
-sendLazyResponse send (Response status headers body) = do
-  sendHeader send (formatStatusLine status) headers'
-  mapM_ (send . chunk) $ BL.toChunks body
-  send $ chunk ""
- where headers' = ("Transfer-Encoding", "Chunked") : headers
-       chunk :: B.ByteString -> B.ByteString
-       chunk s = foldr B.append "" [BU.fromString $ showHex (B.length s) "", "\r\n", s, "\r\n"]

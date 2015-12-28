@@ -256,7 +256,6 @@ fsrest /var/www 0.0.0.0 80
 
 Here are some current limitations that might be removed in later versions.
 
- - The `HEAD` method is not implemented.
  - Language negotiation based on `Accept-Language` is not implemented.
 
 ## Common Problems
