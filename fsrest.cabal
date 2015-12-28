@@ -29,6 +29,7 @@ Executable fsrest
                  Glob,
                  network >= 2.6,
                  network-uri,
+                 parsec,
                  process,
                  text,
                  transformers,

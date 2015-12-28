@@ -1,5 +1,3 @@
--- Copyright 2012, 2013, 2014 Chris Forno
-
 import Control.Arrow ((***))
 import Control.Concurrent (forkIO)
 import Control.Exception (finally, handle, SomeException)
@@ -18,17 +16,18 @@ import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socke
 import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
-import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, hAccept, Method)
+import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
-import System.Directory (doesDirectoryExist, getPermissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, setCurrentDirectory)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
-import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparator)
+import System.FilePath (takeFileName, takeDirectory, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
 import System.IO (Handle, hPutStrLn, stderr, hClose)
-import System.Posix.Files (fileExist, fileAccess, readSymbolicLink)
+import System.Posix.Files (fileAccess, readSymbolicLink)
 import System.Process (readProcessWithExitCode, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
+import Media
 import Negotiation
 
 main = do
@@ -65,90 +64,111 @@ serveClient h dir = do
           "OPTIONS" -> reply (if null opts
                                 then notFound
                                 else Response status200 [("Allow", B.intercalate ", " opts)] "")
-          method' -> if method' `elem` map CI.mk opts
-                       then reply =<< handleRequest method' request dirname
-                       else reply (Response status405 [("Allow", B.intercalate ", " opts)] "")
+          method' | method' `elem` map CI.mk opts -> reply =<< handleRequest method' request dirname
+                    -- While correct to say that the GET method is not allowed
+                    -- for something that may be PUT, the more intuitive
+                    -- response is a 404.
+                  | null opts || opts == ["PUT"] -> reply notFound
+                  | otherwise -> reply (Response status405 [("Allow", B.intercalate ", " opts)] "")
  where sendToClient = B.hPutStr h
        reply = sendLazyResponse sendToClient
 
 notFound = Response status404 [] "Not Found"
 
 handleRequest :: CI Method -> Request BodyReader -> FilePath -> IO (Response BL.ByteString)
-
-handleRequest "GET" request dirname = do
-  reps <- availableRepresentations dirname
-  -- When the directory exists but there are no representations, we consider it missing.
-  if null reps
-    then return notFound
-    else
-      let acceptable = lookup hAccept (requestHeaders request) 
-          bests = case acceptable of
-                    Nothing -> reps
-                    Just a  -> let bests' = best $ matches (map repContentType reps) a in
-                                 filter (\r -> isJust $ find (== repContentType r) bests') reps
-      in case bests of
-        [] -> return (notAcceptable reps)
-        [r] -> representation dirname r
-        rs ->
-          -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
-          handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
-            link <- readSymbolicLink $ dirname </> "GET"
-            case find ((== link) . repPath) rs of
-              Nothing -> return $ multipleChoices rs
-              Just r -> representation dirname r
+handleRequest method request dirname =
+  case method of
+    "GET" -> do
+      reps <- availableRepresentations dirname
+      -- When the directory exists but there are no representations, we consider it missing.
+      if null reps
+        then return notFound
+        else
+          let acceptable = lookup hAccept (requestHeaders request) 
+              bests = case acceptable of
+                        Nothing -> reps
+                        Just a  -> let bests' = best $ matches (map repContentType reps) a in
+                                     filter (\r -> isJust $ find (== repContentType r) bests') reps
+          in case bests of
+            [] -> return (notAcceptable reps)
+            [r] -> representation dirname r
+            rs ->
+              -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
+              handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
+                link <- readSymbolicLink $ dirname </> "GET"
+                case find ((== link) . repPath) rs of
+                  Nothing -> return $ multipleChoices rs
+                  Just r -> representation dirname r
+    "POST" -> do
+      -- We already checked that there's a file to handle POST in
+      -- `options`. This does unnecessary reads from the disk. We also
+      -- don't correctly handle any race conditions.
+      execPath <- fromJust `fmap` resourceExecutable "POST" dirname
+      case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
+        Nothing -> return $ Response status415 [] "Invalid Content-Type"
+        Just mediaType -> handleProcess request execPath [mediaTypeFileName mediaType]
+    "PUT" -> do
+      execPath <- fromJust `fmap` resourceExecutable "PUT" dirname
+      case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
+        Nothing -> return $ Response status415 [] "Invalid Content-Type"
+        Just mediaType -> handleProcess request execPath [dirname, mediaTypeFileName mediaType]
+    "DELETE" -> do
+      execPath <- fromJust `fmap` resourceExecutable method dirname
+      handleProcess request execPath [dirname]
+    _ -> error "Unimplemented but allowed method. This shouldn't happen."
  where repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
                               (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
        multipleChoices = repsResp status300
        notAcceptable = repsResp status406
 
-handleRequest "POST" (Request _ _ headers body) dirname = do
-  -- We already checked that there's a script to handle POST in
-  -- `options`. This does unnecessary reads from the disk. We also
-  -- don't correctly handle any race conditions.
-  postPath <- fromJust `fmap` resourcePostFile dirname
+handleProcess request execPath args = do
   (out, exitCode) <- do
-    let proc' = (proc postPath []) { cwd = Just dirname
-                                   , env = Just (map (B8.unpack . CI.original *** B8.unpack) headers)
-                                   , std_in = CreatePipe
-                                   , std_out = CreatePipe }
-    (Just hin, Just hout, _, ph) <- createProcess proc'
-    sendBody (B.hPut hin) body
+    let vars = map (B8.unpack . CI.original *** B8.unpack) (requestHeaders request)
+    (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
+                                                     { cwd = Just (takeDirectory execPath)
+                                                     , env = Just vars
+                                                     , std_in = CreatePipe
+                                                     , std_out = CreatePipe })
+    sendBody (B.hPut hin) (requestBody request)
     out' <- BL.hGetContents hout
     exitCode' <- waitForProcess ph
     return (out', exitCode')
-  case exitCode of
-    ExitSuccess   -> return $ Response status200 [] out
-    ExitFailure _ -> return $ Response status500 [] "Internal Server Error"
-
-handleRequest _ _ _ = error "Unimplemented but allowed method. This shouldn't happen."
+  return (case exitCode of
+            ExitSuccess   -> Response status200 [] out
+            ExitFailure _ -> Response status500 [] "Internal Server Error")
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]
 options dirname = do
-  exists <- doesDirectoryExist dirname
-  canRead <- if exists
-               then do
-                 perms <- getPermissions dirname
-                 return (readable perms)
-               else return False
+  canRead <- perms [readable] dirname
   reps <- if canRead
             then availableRepresentations dirname
             else return []
-  canPost <- isJust `fmap` resourcePostFile dirname
-  return (["GET" | canRead && not (null reps)] ++ ["POST" | canPost])
+  canPost <- isJust `fmap` resourceExecutable "POST" dirname
+  canPut <- isJust `fmap` resourceExecutable "PUT" dirname
+  canDelete <- isJust `fmap` resourceExecutable "DELETE" dirname
+  return (["GET" | canRead && not (null reps)] ++
+          ["POST" | canPost] ++ ["PUT" | canPut] ++ ["DELETE" | canDelete])
 
-resourcePostFile :: FilePath -> IO (Maybe FilePath)
-resourcePostFile dirname = do
-  -- TODO: Consider the POST Content-Type.
-  let path = dirname </> "POST"
-  exists <- fileExist path
-  if exists
-    then do
-      perms <- getPermissions path
-      return (if readable perms && executable perms
-                then Just (normalise path)
-                else Nothing)
-    else return Nothing
+-- Return the executable file usable to carry out a given method on a
+-- resource (or Nothing if we do not have a way to carry out that
+-- method).
+resourceExecutable :: CI Method -> FilePath -> IO (Maybe FilePath)
+resourceExecutable method dirname =
+  case method of
+    "POST" -> executableFile (dirname </> "POST")
+    "PUT" -> executableFile (parent dirname </> "PUT")
+    "DELETE" -> executableFile (parent dirname </> "DELETE")
+    _ -> return Nothing
+ where executableFile path = do
+         canExec <- perms [executable] path
+         return (if canExec then Just (normalise path) else Nothing)
+       parent = joinPath . init . splitPath
+
+perms :: [Permissions -> Bool] -> FilePath -> IO Bool
+perms fs path = handle (const (return False) :: SomeException -> IO Bool) $ do
+  permissions <- getPermissions path
+  return (all ($ permissions) fs)
 
 -- TODO: Charset and Language
 data Representation = Representation { repPath        :: FilePath

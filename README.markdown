@@ -12,19 +12,19 @@ fsrest is NOT:
  - high performance
  - tied to any programming language
 
-# Motivation and Philosophy
+## Motivation and Philosophy
 
 Most modern websites are served by monolithic programs. These programs are usually written in a single language and communicate with a database. Each new feature of the site increases the size and complexity of the program.
 
-## The Right Tool for the Job
+### The Right Tool for the Job
 
 fsrest isn't tied to a particular programming language. Its job is just to dispatch HTTP requests to the appropriate place. Mostly, it serves static files. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
 
-## RESTful by Design
+### RESTful by Design
 
 Due to the way fsrest requires that resources (URLs) be directories, it's more difficult to create non-RESTful websites.
 
-# How it Works
+## How it Works
 
 fsrest starts with a simple concept: directories are resources and files are representations. For example, if you want to serve a page at `/home`, instead of creating a `home.html` or `home.php` file, you'd create a `home` directory at the top of your web root and then place a representation of the home page within the directory.
 
@@ -57,7 +57,7 @@ Content-Type: text/html; charset="UTF-8"
 
 (Note that fsrest assumes UTF-8 for all text/* representations.)
 
-## Multiple Representations
+### Multiple Representations
 
 Here's another hypothetical request:
 
@@ -108,7 +108,7 @@ $ mv logo.svg image/logo/image.svg+xml
 
 And here you can see a clearer example of how fsrest looks at file names. The MIME type for SVG files is `image/svg+xml`. fsrest doesn't have a registry of MIME types; it simply looks at file names. You could create `image/logo/foo.bar` and if it were served back to the client, it would be sent as type `foo/bar`.
 
-# POSTing new resources
+## POSTing new resources
 
 Each resource (directory) can have a `POST` executable (or symlink to an executable) that allows for POSTing of subordinate resources. If it exists, any POST request is passed to the executable with the POST body, if any, passed into stdin. Any request variables are set as environment variables. (Note that file inputs are not currently supported).
 
@@ -122,11 +122,11 @@ How are we going to post comments? Well, ignoring all the complexities of securi
 
 ```
 $ cat > comments/POST
-#!/bin/bash
+#!/usr/bin/env bash
 largest=$(find . -iregex './[0-9]+' -printf "%f\n" | sort -r | head -n 1)
 new=$(expr $largest + 1)
 mkdir $new
-cat > "$new/${CONTENT_TYPE/\//.})"
+cat > $new/$1
 ^D
 $ chmod +x comments/POST
 ```
@@ -137,27 +137,27 @@ Let's break this down line by line:
  2. Next, we use `find` to find the highest comment number already in the directory (the current working directory is the directory that the resource is being POSTed to).
  3. The next line sets `new` to 1 greater than `largest`. If largest was empty (because there were no existing comments) it sets it to `1`.
  4. Once we know the new comment number, we create it with `mkdir`.
- 5. Finally, we store the body of the POST request into a file with the POSTed representation.
+ 5. Finally, we store the body of the POST request into a file with the POSTed representation. The first argument (`$1`) is the filename corresponding to the Content-Type given by the client.
  6. We set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
 
 ```
-$ curl -H "Content-Type: text/plain" -X POST -d "Hello, world." http://yoursite/comments
+$ curl -X POST -H 'Content-Type: text/plain' -d 'Hello, world.' http://yoursite/comments
 1
 ```
 
 If everything worked correctly, a new comment should appear in the filesystem as `comments/1/text.plain` and you should be able to `GET` it as well.
 
 ```
-$ curl http://yoursites/comments/1
+$ curl -X GET http://yoursite/comments/1
 ```
 
-## POST variables
+### POST variables
 
 Any parameters POSTed to a resource will be available as variables.
 
 ```
-$ echo > POST
-#!/bin/bash
+$ echo > comments/POST
+#!/usr/bin/env bash
 env
 ^D
 $ chmod +x POST
@@ -172,7 +172,73 @@ CONTENT_TYPE=application/x-www-form-urlencoded
 
 `PWD`, `SHLVL`, and `_` are 3 environment variables that are set by Bash.
 
-# Getting Started
+## PUTing new resources
+
+PUT is a little different from POST because while we POST subordinate resources to an already-existing resource, PUT can either create a new resource or update an existing one. Because of this, it's more convenient to place the `PUT` script in the parent directory of the existing or eventual resource.
+
+For example, let's implement a simple content management system where articles are created or edited by with PUT operations. A client request might look like:
+
+```
+$ curl -X PUT -H 'Content-Type: text/html' -T rest-design.html http://yoursite/articles/restful-api-design
+```
+
+This command will PUT the contents of the file `rest-design.html` (on the client's computer) to the given URL. We'll need the articles resource to exist and to place a `PUT` executable there.
+
+```
+$ mkdir articles
+$ cat > articles/PUT
+#!/usr/bin/env bash
+mkdir -p $1
+cat > $1/$2
+^D
+$ chmod +x articles/PUT
+```
+
+The first argument to the executable (`$1`) is the name of the resource (`restful-api-design`). The second argument is the filename corresponding to the representation (`text.html`).
+
+What about PUT and existing resources? You might implement editing of the comments from the earlier example with PUT. So, to replace the content that was created by the earlier POST, you could:
+
+```
+$ curl -X PUT -H 'Content-Type: text/plain' -d 'First post!' http://yoursite/comments/1
+```
+
+Again, place a `PUT` script in the comment's resource directory:
+
+```
+$ echo > comments/1/PUT
+#!/usr/bin/env bash
+mkdir -p $1
+cat > $1/$2
+^D
+$ chmod +x comments/1/PUT
+```
+
+Note that the `PUT` script is identical in these simple cases but your `PUT` program might restrict the content type that each is allowed to have and do additional validation and transformation before storing the representation to the filesystem.
+
+Note: It is up to you to make sure that your PUT operations are idempotent.
+
+Note: A PUT in fsrest doesn't necessarily update a resource, it creates or updates a given representation.
+
+## DELETEing resources
+
+DELETE is implemented similar to POST. The `DELETE` script must also be in the parent directory of the resource to delete. For example, for deleting comments:
+
+```
+$ curl -X DELETE http://yoursite/comments/1
+```
+
+Here's a simple (but unsafe) implementation of `DELETE`:
+
+```
+$ cat > comments/DELETE
+#!/usr/bin/env bash
+rm -rf $1
+$ chmod +x DELETE
+```
+
+The first argument (`$1`) is the name of the resource to delete. Since DELETE requests deletion of an entire resource and not just a single representation, there is no representation passed to the executable.
+
+## Getting Started
 
 Build fsrest with `cabal install` or with `nix-build dev.nix`.
 
@@ -182,23 +248,23 @@ Start fsrest and provide it with the directory that you want to serve and give i
 fsrest /var/www 0.0.0.0 80
 ```
 
-## Installing on NixOS
+### Installing on NixOS
 
 `module.nix` provides a way for you to declaratively install and configure fsrest on a [NixOS](http://nixos.org/) system.
 
-# Limitations
+## Limitations
 
 Here are some current limitations that might be removed in later versions.
 
- - `PUT`, `DELETE`, etc. are not implemented.
+ - The `HEAD` method is not implemented.
  - Language negotiation based on `Accept-Language` is not implemented.
 
-# Common Problems
+## Common Problems
 
-## `fsrest: readProcess: some.file  (exit 127): failed`
+### `fsrest: readProcess: some.file  (exit 127): failed`
 
 This is probably happening because the file is marked as executable and fsrest is trying to execute it (and failing).
 
-## Multiple Choices
+### Multiple Choices
 
 If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to `GET`.
