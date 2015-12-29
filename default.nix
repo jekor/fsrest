@@ -1,7 +1,7 @@
-{ mkDerivation, attoparsec, base, bytestring, case-insensitive
-, deepseq, directory, filepath, Glob, http-kit, http-types, network
-, network-uri, parsec, process, stdenv, text, transformers, unix
-, utf8-string
+{ mkDerivation, aeson, attoparsec, base, bytestring
+, case-insensitive, deepseq, directory, filepath, Glob, http-kit
+, http-types, network, network-uri, parsec, process, stdenv, text
+, transformers, unix, utf8-string, vector
 }:
 mkDerivation {
   pname = "fsrest";
@@ -10,9 +10,9 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   executableHaskellDepends = [
-    attoparsec base bytestring case-insensitive deepseq directory
+    aeson attoparsec base bytestring case-insensitive deepseq directory
     filepath Glob http-kit http-types network network-uri parsec
-    process text transformers unix utf8-string
+    process text transformers unix utf8-string vector
   ];
   homepage = "https://github.com/jekor/fsrest";
   description = "filesystem-based RESTful HTTP server";

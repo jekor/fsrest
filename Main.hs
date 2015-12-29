@@ -1,4 +1,3 @@
-import Control.Arrow ((***))
 import Control.Concurrent (forkIO)
 import Control.DeepSeq (deepseq)
 import Control.Exception (finally, handle, SomeException, try)
@@ -9,7 +8,6 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.CaseInsensitive (CI)
-import Data.Char (isSpace)
 import Data.List (find, elemIndex)
 import Data.Maybe (isJust, fromJust)
 import Network (accept)
@@ -29,6 +27,7 @@ import System.Posix.Files (fileAccess, readSymbolicLink)
 import System.Posix.IO (createPipe, closeFd, fdToHandle)
 import System.Process (proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
+import Headers
 import Media
 import Negotiation
 
@@ -157,8 +156,8 @@ handleProcess request execPath args = do
   (statusIn, statusOut) <- createPipe
   (headersIn, headersOut) <- createPipe
   -- TODO: Ensure that headers don't overwrite sensitive variables. Perhaps prefix them.
-  let vars = map (B8.unpack . CI.original *** B8.unpack) (requestHeaders request) ++
-               [("status", show statusOut), ("headers", show headersOut)]
+  let vars = headerEnvVars (requestHeaders request)
+          ++ [("STATUS_FD", show statusOut), ("HEADERS_FD", show headersOut)]
   (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
                                                    { cwd = Just (takeDirectory execPath)
                                                    , env = Just vars
@@ -173,8 +172,8 @@ handleProcess request execPath args = do
       ignore (closeFd statusOut)
       ignore (closeFd headersOut)
       status <- readStatus =<< fdToHandle statusIn
-      headers <- readHeaders [] =<< fdToHandle headersIn
-      return (headers `deepseq` (Response status headers out))
+      headers <- readHeaders =<< fdToHandle headersIn
+      return (headers `deepseq` Response status headers out)
  where ignore a = void (try a :: IO (Either SomeException ()))
        readStatus h = do
          eof <- hIsEOF h
@@ -183,18 +182,6 @@ handleProcess request execPath args = do
            else do
              statusString <- hGetLine h
              return (toEnum (read statusString))
-       readHeaders headers h = do
-         eof <- hIsEOF h
-         if eof
-           then return (reverse headers)
-           else do
-             headerLine <- B8.hGetLine h
-             readHeaders ((header headerLine) : headers) h
-       header s =
-         case B8.break (== ':') s of
-           (_, "") -> error "Failed to parse header line."
-           (name, value) -> (CI.mk name, trim value)
-       trim = B8.dropWhile isSpace . fst . B8.spanEnd isSpace
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]

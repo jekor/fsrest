@@ -19,6 +19,7 @@ Data-Files:    module.nix
 Executable fsrest
   Main-Is:       Main.hs
   Build-Depends: base >= 4,
+                 aeson,
                  attoparsec,
                  bytestring,
                  case-insensitive,
@@ -35,6 +36,7 @@ Executable fsrest
                  text,
                  transformers,
                  unix,
-                 utf8-string
+                 utf8-string,
+                 vector
   Extensions:    OverloadedStrings
-  GHC-Options:   -Wall -fno-warn-missing-signatures -fno-warn-type-defaults -fno-warn-unused-do-bind -threaded -O2
+  GHC-Options:   -Wall -fno-warn-missing-signatures -fno-warn-type-defaults -fno-warn-unused-do-bind -fno-warn-orphans -threaded -O2
