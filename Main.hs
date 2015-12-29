@@ -1,14 +1,15 @@
 import Control.Arrow ((***))
 import Control.Concurrent (forkIO)
-import Control.Exception (finally, handle, SomeException)
+import Control.DeepSeq (deepseq)
+import Control.Exception (finally, handle, SomeException, try)
 import Control.Monad (filterM, forever, void, liftM2)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
-import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.CaseInsensitive as CI
 import Data.CaseInsensitive (CI)
+import Data.Char (isSpace)
 import Data.List (find, elemIndex)
 import Data.Maybe (isJust, fromJust)
 import Network (accept)
@@ -16,16 +17,17 @@ import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socke
 import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
-import Network.HTTP.Types (status200, status300, status404, status500, status405, status406, status415, hAccept, Method)
+import Network.HTTP.Types (status200, status300, status400, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
-import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, doesDirectoryExist, setCurrentDirectory, makeAbsolute)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, doesDirectoryExist, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (takeFileName, takeDirectory, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
-import System.IO (Handle, hPutStrLn, stderr, hClose)
+import System.IO (Handle, hPutStrLn, stderr, hClose, hGetLine, hIsEOF, hPrint)
 import System.Posix.Files (fileAccess, readSymbolicLink)
-import System.Process (readProcessWithExitCode, proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
+import System.Posix.IO (createPipe, closeFd, fdToHandle)
+import System.Process (proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
 import Media
 import Negotiation
@@ -56,31 +58,32 @@ serveClient :: Handle -> FilePath -> IO ()
 serveClient h dir = do
   conn <- inputStreamFromHandle h
   forever $ readRequest True conn >>= \ request@(Request method url _ _) ->
-    case URI.parseURIReference $ BU.toString url of
-      Nothing -> reply $ Response status500 [] "Failed to parse request URI"
-      Just uri -> do
-        let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
-        case CI.mk method of
-          "OPTIONS" -> do
-            opts <- options dirname
-            reply (if null opts
-                     then notFound
-                     else Response status200 [allowHeader opts] "")
-          method' -> do
-            allowed <- methodAllowed method' dirname
-            if allowed
-              then do
-                response <- handleRequest method' request dirname
-                if method == "HEAD"
-                  then replyEmpty response
-                  else reply response
-              else if method' `elem` ["GET", "HEAD"]
-                     -- While technically correct to say that the GET method is not allowed,
-                     -- better to say that the resource is not found.
-                     then reply notFound
-                     else do
-                       opts <- options dirname
-                       reply (Response status405 [allowHeader opts] "")
+    handle handleError $
+      case URI.parseURIReference $ BU.toString url of
+        Nothing -> reply $ Response status400 [] "Bad Request URI"
+        Just uri -> do
+          let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
+          case CI.mk method of
+            "OPTIONS" -> do
+              opts <- options dirname
+              reply (if null opts
+                       then notFound
+                       else Response status200 [allowHeader opts] "")
+            method' -> do
+              allowed <- methodAllowed method' dirname
+              if allowed
+                then do
+                  response <- handleRequest method' request dirname
+                  if method == "HEAD"
+                    then replyEmpty response
+                    else reply response
+                else if method' `elem` ["GET", "HEAD"]
+                       -- While technically correct to say that the GET method is not allowed,
+                       -- better to say that the resource is not found.
+                       then reply notFound
+                       else do
+                         opts <- options dirname
+                         reply (Response status405 [allowHeader opts] "")
  where allowHeader opts = ("Allow", B.intercalate ", " opts)
        sendToClient = B.hPutStr h
        reply (Response status headers body) = do
@@ -90,8 +93,13 @@ serveClient h dir = do
        chunk s = foldr B.append "" [BU.fromString $ showHex (B.length s) "", "\r\n", s, "\r\n"]
        replyEmpty (Response status headers _) =
          sendHeader sendToClient (formatStatusLine status) headers
+       handleError :: SomeException -> IO ()
+       handleError e = do
+         hPrint stderr e
+         reply serverError
 
 notFound = Response status404 [] "Not Found"
+serverError = Response status500 [] "Internal Server Error"
 
 handleRequest :: CI Method -> Request BodyReader -> FilePath -> IO (Response BL.ByteString)
 handleRequest method request dirname =
@@ -109,14 +117,14 @@ handleRequest method request dirname =
                                      filter (\r -> isJust $ find (== repContentType r) bests') reps
           in case bests of
             [] -> return (notAcceptable reps)
-            [r] -> reply' method' =<< representation dirname r
+            [r] -> reply' method' =<< representation request dirname r
             rs ->
               -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
               handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
                 link <- readSymbolicLink $ dirname </> "GET"
                 case find ((== link) . repPath) rs of
                   Nothing -> return $ multipleChoices rs
-                  Just r -> reply' method' =<< representation dirname r
+                  Just r -> reply' method' =<< representation request dirname r
     "POST" -> do
       -- We already checked that there's a file to handle POST in
       -- `options`. This does unnecessary reads from the disk. We also
@@ -145,20 +153,48 @@ handleRequest method request dirname =
            _ -> undefined
 
 handleProcess request execPath args = do
-  (out, exitCode) <- do
-    let vars = map (B8.unpack . CI.original *** B8.unpack) (requestHeaders request)
-    (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
-                                                     { cwd = Just (takeDirectory execPath)
-                                                     , env = Just vars
-                                                     , std_in = CreatePipe
-                                                     , std_out = CreatePipe })
-    sendBody (B.hPut hin) (requestBody request)
-    out' <- BL.hGetContents hout
-    exitCode' <- waitForProcess ph
-    return (out', exitCode')
-  return (case exitCode of
-            ExitSuccess   -> Response status200 [] out
-            ExitFailure _ -> Response status500 [] "Internal Server Error")
+  -- Create handles for the status code and headers.
+  (statusIn, statusOut) <- createPipe
+  (headersIn, headersOut) <- createPipe
+  -- TODO: Ensure that headers don't overwrite sensitive variables. Perhaps prefix them.
+  let vars = map (B8.unpack . CI.original *** B8.unpack) (requestHeaders request) ++
+               [("status", show statusOut), ("headers", show headersOut)]
+  (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
+                                                   { cwd = Just (takeDirectory execPath)
+                                                   , env = Just vars
+                                                   , std_in = CreatePipe
+                                                   , std_out = CreatePipe })
+  sendBody (B.hPut hin) (requestBody request)
+  out <- BL.hGetContents hout
+  exitCode <- waitForProcess ph
+  case exitCode of
+    ExitFailure _ -> return serverError
+    ExitSuccess -> do
+      ignore (closeFd statusOut)
+      ignore (closeFd headersOut)
+      status <- readStatus =<< fdToHandle statusIn
+      headers <- readHeaders [] =<< fdToHandle headersIn
+      return (headers `deepseq` (Response status headers out))
+ where ignore a = void (try a :: IO (Either SomeException ()))
+       readStatus h = do
+         eof <- hIsEOF h
+         if eof
+           then return status200
+           else do
+             statusString <- hGetLine h
+             return (toEnum (read statusString))
+       readHeaders headers h = do
+         eof <- hIsEOF h
+         if eof
+           then return (reverse headers)
+           else do
+             headerLine <- B8.hGetLine h
+             readHeaders ((header headerLine) : headers) h
+       header s =
+         case B8.break (== ':') s of
+           (_, "") -> error "Failed to parse header line."
+           (name, value) -> (CI.mk name, trim value)
+       trim = B8.dropWhile isSpace . fst . B8.spanEnd isSpace
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]
@@ -233,18 +269,12 @@ availableRepresentations dirname =
                else return False
            _ -> return False
 
-representation :: FilePath -> Representation -> IO (Response BL.ByteString)
-representation dirname r = do
+representation :: Request BodyReader -> FilePath -> Representation -> IO (Response BL.ByteString)
+representation request dirname r = do
+  -- TODO: Only set charset on text types.
   let contentType = repContentType r `B.append` "; charset=utf-8"
       headers = [("Content-Type", contentType)]
   perms' <- getPermissions $ dirname </> repPath r
   if executable perms'
-    then do
-      setCurrentDirectory dirname
-      -- TODO: Read the process output lazily as a bytestring.
-      -- TODO: Support setting headers.
-      (exit, out, err) <- readProcessWithExitCode (dirname </> repPath r) [] ""
-      case exit of
-        ExitSuccess -> return $ Response status200 headers (BLU.fromString out)
-        _           -> return $ Response status500 [] (BLU.fromString err)
+    then handleProcess request (dirname </> repPath r) []
     else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)

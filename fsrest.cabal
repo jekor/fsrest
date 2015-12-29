@@ -22,6 +22,7 @@ Executable fsrest
                  attoparsec,
                  bytestring,
                  case-insensitive,
+                 deepseq,
                  directory,
                  filepath,
                  http-kit >= 0.5,
