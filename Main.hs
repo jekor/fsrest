@@ -1,6 +1,5 @@
 import Control.Concurrent (forkIO)
-import Control.DeepSeq (deepseq)
-import Control.Exception (finally, handle, SomeException, try)
+import Control.Exception (finally, handle, SomeException)
 import Control.Monad (filterM, forever, void, liftM2)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -12,7 +11,7 @@ import Data.List (find, elemIndex)
 import Data.Maybe (isJust, fromJust)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
-import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader, sendBody)
+import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader)
 import Network.HTTP.Toolkit.Header (sendHeader)
 import Network.HTTP.Toolkit.Response (formatStatusLine)
 import Network.HTTP.Types (status200, status300, status400, status404, status500, status405, status406, status415, hAccept, Method)
@@ -21,15 +20,13 @@ import Numeric (showHex)
 import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, doesDirectoryExist, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
-import System.FilePath (takeFileName, takeDirectory, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
-import System.IO (Handle, hPutStrLn, stderr, hClose, hGetLine, hIsEOF, hPrint)
+import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
+import System.IO (Handle, hPutStrLn, stderr, hClose, hPrint)
 import System.Posix.Files (fileAccess, readSymbolicLink)
-import System.Posix.IO (createPipe, closeFd, fdToHandle)
-import System.Process (proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
-import Headers
 import Media
 import Negotiation
+import Process
 
 main = do
   args <- getArgs
@@ -72,7 +69,7 @@ serveClient h dir = do
               allowed <- methodAllowed method' dirname
               if allowed
                 then do
-                  response <- handleRequest method' request dirname
+                  response <- handleRequest request dirname
                   if method == "HEAD"
                     then replyEmpty response
                     else reply response
@@ -95,21 +92,20 @@ serveClient h dir = do
        handleError :: SomeException -> IO ()
        handleError e = do
          hPrint stderr e
-         reply serverError
+         reply (Response status500 [] "Internal Server Error")
 
 notFound = Response status404 [] "Not Found"
-serverError = Response status500 [] "Internal Server Error"
 
-handleRequest :: CI Method -> Request BodyReader -> FilePath -> IO (Response BL.ByteString)
-handleRequest method request dirname =
-  case method of
+handleRequest :: Request BodyReader -> FilePath -> IO (Response BL.ByteString)
+handleRequest request@(Request method _ headers _) dirname =
+  case CI.mk method of
     method' | method' `elem` ["GET", "HEAD"] -> do
       reps <- availableRepresentations dirname
       -- When the directory exists but there are no representations, we consider it missing.
       if null reps
         then return notFound
         else
-          let acceptable = lookup hAccept (requestHeaders request) 
+          let acceptable = lookup hAccept headers
               bests = case acceptable of
                         Nothing -> reps
                         Just a  -> let bests' = best $ matches (map repContentType reps) a in
@@ -138,50 +134,18 @@ handleRequest method request dirname =
         Nothing -> return $ Response status415 [] "Invalid Content-Type"
         Just mediaType -> handleProcess request execPath [dirname, mediaTypeFileName mediaType]
     "DELETE" -> do
-      execPath <- fromJust `fmap` resourceExecutable method dirname
+      execPath <- fromJust `fmap` resourceExecutable "DELETE" dirname
       handleProcess request execPath [dirname]
     _ -> error "Unimplemented but allowed method. This shouldn't happen."
  where repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
                               (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
        multipleChoices = repsResp status300
        notAcceptable = repsResp status406
-       reply' method' response@(Response code headers _) =
+       reply' method' response@(Response code headers' _) =
          case method' of
            "GET" -> return response
-           "HEAD" -> return (Response code headers "")
+           "HEAD" -> return (Response code headers' "")
            _ -> undefined
-
-handleProcess request execPath args = do
-  -- Create handles for the status code and headers.
-  (statusIn, statusOut) <- createPipe
-  (headersIn, headersOut) <- createPipe
-  -- TODO: Ensure that headers don't overwrite sensitive variables. Perhaps prefix them.
-  let vars = headerEnvVars (requestHeaders request)
-          ++ [("STATUS_FD", show statusOut), ("HEADERS_FD", show headersOut)]
-  (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
-                                                   { cwd = Just (takeDirectory execPath)
-                                                   , env = Just vars
-                                                   , std_in = CreatePipe
-                                                   , std_out = CreatePipe })
-  sendBody (B.hPut hin) (requestBody request)
-  out <- BL.hGetContents hout
-  exitCode <- waitForProcess ph
-  case exitCode of
-    ExitFailure _ -> return serverError
-    ExitSuccess -> do
-      ignore (closeFd statusOut)
-      ignore (closeFd headersOut)
-      status <- readStatus =<< fdToHandle statusIn
-      headers <- readHeaders =<< fdToHandle headersIn
-      return (headers `deepseq` Response status headers out)
- where ignore a = void (try a :: IO (Either SomeException ()))
-       readStatus h = do
-         eof <- hIsEOF h
-         if eof
-           then return status200
-           else do
-             statusString <- hGetLine h
-             return (toEnum (read statusString))
 
 -- Determine which methods are allowed on a given resource.
 options :: FilePath -> IO [Method]
@@ -263,5 +227,5 @@ representation request dirname r = do
       headers = [("Content-Type", contentType)]
   perms' <- getPermissions $ dirname </> repPath r
   if executable perms'
-    then handleProcess request (dirname </> repPath r) []
+    then handleProcess request (dirname </> repPath r) [] 
     else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)
