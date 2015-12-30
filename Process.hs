@@ -12,9 +12,11 @@ import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.Char (isSpace, isAlphaNum, toUpper)
+import Data.Maybe (fromJust)
 import Data.Text.Encoding (decodeUtf8)
 import Network.HTTP.Toolkit (Request(..), Response(..), BodyReader, sendBody)
-import Network.HTTP.Types (Header, HeaderName, status200, status500)
+import Network.HTTP.Types (Header, parseQuery, Query, status200, status500)
+import qualified Network.URI as URI
 import System.Exit (ExitCode(..))
 import System.FilePath (takeDirectory)
 import System.IO (Handle, hGetLine, hIsEOF)
@@ -26,8 +28,10 @@ handleProcess request execPath args = do
   -- Create handles for the status code and headers.
   (statusIn, statusOut) <- createPipe
   (headersIn, headersOut) <- createPipe
-  -- TODO: Ensure that headers don't overwrite sensitive variables. Perhaps prefix them.
-  let vars = headerEnvVars (requestHeaders request)
+  -- This was already successfully parsed in order to get this far.
+  let url = fromJust (URI.parseURIReference (BU.toString (requestPath request)))
+      vars = queryEnvVars (URI.uriQuery url)
+          ++ headerEnvVars (requestHeaders request)
           ++ [("STATUS_FD", show statusOut), ("HEADERS_FD", show headersOut)]
   (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
                                                    { cwd = Just (takeDirectory execPath)
@@ -59,6 +63,23 @@ varName = map varChar
  where varChar c | isAlphaNum c = toUpper c
                  | otherwise = '_'
 
+queryEnvVars :: String -> [(String, String)]
+queryEnvVars queryString =
+  [ ("QUERY_STRING", queryString')
+  , ("QUERY_JSON", BLU.toString (encode query))
+  , ("QUERY_PARAMS", unwords (map (queryVarName . fst) query))
+  ] ++ map queryVar query
+ where queryString' = case queryString of
+                        [] -> []
+                        _ -> tail queryString
+       query = parseQuery (BU.fromString queryString')
+       queryVarName name = varName (BU.toString name)
+       queryVar (name, value) = ("QUERY_" ++ queryVarName name, maybe "" BU.toString value)
+
+instance ToJSON Query where
+  toJSON = object . map query
+   where query (name, value) = decodeUtf8 name .= fmap decodeUtf8 value
+
 -- TODO: Ensure that duplicate headers are combined for supported headers.
 instance ToJSON [Header] where
   toJSON = object . map header
@@ -73,9 +94,7 @@ headerEnvVars headers =
   , ("HEADERS_JSON", BLU.toString (encode headers))
     -- a variable for each header, prefixed with HEADER_
   ] ++ map headerVar headers
- where headerVarName :: HeaderName -> String
-       headerVarName name = varName (BU.toString (CI.original name))
-       headerVar :: Header -> (String, String)
+ where headerVarName name = varName (BU.toString (CI.original name))
        headerVar (name, value) = ("HEADER_" ++ headerVarName name, BU.toString value)
 
 -- Read headers from a file.
