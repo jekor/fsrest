@@ -127,15 +127,15 @@ handleRequest request@(Request method _ headers _) dirname =
       execPath <- fromJust `fmap` resourceExecutable "POST" dirname
       case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
         Nothing -> return $ Response status415 [] "Invalid Content-Type"
-        Just mediaType -> handleProcess request execPath [mediaTypeFileName mediaType]
+        Just mediaType -> handleProcess request execPath [mediaTypeFileName mediaType] []
     "PUT" -> do
       execPath <- fromJust `fmap` resourceExecutable "PUT" dirname
       case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
         Nothing -> return $ Response status415 [] "Invalid Content-Type"
-        Just mediaType -> handleProcess request execPath [dirname, mediaTypeFileName mediaType]
+        Just mediaType -> handleProcess request execPath [dirname, mediaTypeFileName mediaType] []
     "DELETE" -> do
       execPath <- fromJust `fmap` resourceExecutable "DELETE" dirname
-      handleProcess request execPath [dirname]
+      handleProcess request execPath [dirname] []
     _ -> error "Unimplemented but allowed method. This shouldn't happen."
  where repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
                               (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
@@ -227,5 +227,5 @@ representation request dirname r = do
       headers = [("Content-Type", contentType)]
   perms' <- getPermissions $ dirname </> repPath r
   if executable perms'
-    then handleProcess request (dirname </> repPath r) [] 
+    then handleProcess request (dirname </> repPath r) [] headers
     else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)

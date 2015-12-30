@@ -23,8 +23,8 @@ import System.IO (Handle, hGetLine, hIsEOF)
 import System.Posix.IO (createPipe, closeFd, fdToHandle)
 import System.Process (proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
-handleProcess :: Request BodyReader -> FilePath -> [String] -> IO (Response BL.ByteString)
-handleProcess request execPath args = do
+handleProcess :: Request BodyReader -> FilePath -> [String] -> [Header] -> IO (Response BL.ByteString)
+handleProcess request execPath args replyHeaders = do
   -- Create handles for the status code and headers.
   (statusIn, statusOut) <- createPipe
   (headersIn, headersOut) <- createPipe
@@ -47,7 +47,9 @@ handleProcess request execPath args = do
       ignore (closeFd statusOut)
       ignore (closeFd headersOut)
       status <- readStatus =<< fdToHandle statusIn
-      headers <- readHeaders =<< fdToHandle headersIn
+      processHeaders <- readHeaders =<< fdToHandle headersIn
+      -- Override or merge response headers with any headers written out by the process.
+      let headers = replyHeaders ++ processHeaders
       return (headers `deepseq` Response status headers out)
  where ignore a = void (try a :: IO (Either SomeException ()))
        readStatus h = do
