@@ -144,6 +144,7 @@ This uses the `find` program to look for non-executable files containing a given
 * Everything output to stdout is sent as the body of the HTTP response (each of the echo lines).
 * The query parameter `q` was accessed through the environment variable `QUERY_PARAM_Q`.
 * If you examine the headers, the Content-Type will be `text/html; charset=utf-8` because of the filename of the script.
+* The file is executed in its directory (this is true whenever a file is executed by fsrest).
 
 Note: stderr is inherited by the executable, so any errors or anything you write to stderr will go to fsrest's stderr. If you're logging the stderr of fsrest you will also log errors from any executables executed by fsrest.
 
@@ -157,6 +158,8 @@ Let's look at some of the environment variables that are passed to the executabl
 $ mkdir debug
 $ ln -s /usr/bin/env debug/text.plain
 $ curl http://localhost/debug?q=Page
+RESOURCE=/debug
+REPRESENTATION=text.plain
 QUERY_STRING=q=Page
 QUERY_JSON={"q":"Page"}
 QUERY_PARAMS=Q
@@ -170,6 +173,8 @@ STATUS_FD=17
 HEADERS_FD=19
 ```
 
+* `RESOURCE`: the full HTTP path to the resource
+* `REPRESENTATION`: the filename corresponding to the sent or requested representation
 * `QUERY_STRING`: the raw query string or the empty string if no query was present
 * `QUERY_JSON`: the query as a JSON object
 * `QUERY_PARAMS`: a list of query parameter environment variable names separated by spaces (useful for iterating over all query parameters)
@@ -256,7 +261,7 @@ else
   new=$(expr $(basename $largest) + 1)
 fi
 mkdir $new
-cat > $new/$1
+cat > $new/$REPRESENTATION
 echo "201" >&$STATUS_FD
 echo "Location: /comments/$new" >&$HEADERS_FD
 ^D
@@ -309,14 +314,14 @@ $ mkdir articles
 $ cat > articles/PUT
 #!/usr/bin/env bash -e
 mkdir -p $1
-cat > $1/$2
+cat > $1/$REPRESENTATION
 ^D
 $ chmod +x articles/PUT
 ```
 
-The first argument to the executable (`$1`) is the name of the resource (`restful-api-design`). The second argument is the filename corresponding to the representation (`text.html`).
+The first argument to the executable (`$1`) is the bare name of the resource (`restful-api-design`). This is a convenience for PUT and DELETE executables that is equivalent to the basename of the `RESOURCE` environment varilable. It's useful since the handlers will usually need to create or delete the corresponding directory.
 
-What about PUT for existing resources? You might implement editing of the comments from the earlier example with PUT. So, to replace the content that was created by the earlier POST, you could:
+What about PUT for existing resources? You might want to allow editing of the comments from the earlier example with PUT. To replace the content that was created by the earlier POST, you could:
 
 ```
 $ curl -X PUT -H 'Content-Type: text/plain' -d 'First post!' http://localhost/comments/1
@@ -328,7 +333,7 @@ Again, place a `PUT` script in the comment resource's parent directory:
 $ cat > comments/PUT
 #!/usr/bin/env bash -e
 mkdir -p $1
-cat > $1/$2
+cat > $1/$REPRESENTATION
 ^D
 $ chmod +x comments/PUT
 ```
@@ -356,7 +361,7 @@ rm -rf $1
 $ chmod +x DELETE
 ```
 
-The first argument (`$1`) is the name of the resource to delete. Since DELETE requests deletion of an entire resource and not just a single representation, there is no representation passed to the executable.
+The first argument (`$1`) is the basename of the resource to delete (just as with PUT). Since DELETE requests deletion of an entire resource and not just a single representation, there is no representation environment variable.
 
 ## Getting Started
 

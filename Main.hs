@@ -2,13 +2,12 @@ import Control.Concurrent (forkIO)
 import Control.Exception (finally, handle, SomeException)
 import Control.Monad (filterM, forever, void, liftM2)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.CaseInsensitive (CI)
-import Data.List (find, elemIndex)
-import Data.Maybe (isJust, fromJust)
+import Data.List (find)
+import Data.Maybe (isJust, fromJust, catMaybes)
 import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
 import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader)
@@ -17,15 +16,14 @@ import Network.HTTP.Toolkit.Response (formatStatusLine)
 import Network.HTTP.Types (status200, status300, status400, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Numeric (showHex)
-import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesFileExist, doesDirectoryExist, makeAbsolute)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesDirectoryExist, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
-import System.FilePath (takeFileName, normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath)
+import System.FilePath (normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath, takeBaseName)
 import System.IO (Handle, hPutStrLn, stderr, hClose, hPrint)
-import System.Posix.Files (fileAccess, readSymbolicLink)
+import System.Posix.Files (readSymbolicLink)
 
 import Media
-import Negotiation
 import Process
 
 main = do
@@ -58,28 +56,30 @@ serveClient h dir = do
       case URI.parseURIReference $ BU.toString url of
         Nothing -> reply $ Response status400 [] "Bad Request URI"
         Just uri -> do
-          let dirname = dir ++ dropTrailingPathSeparator (URI.uriPath uri)
+          let path = dropTrailingPathSeparator (URI.uriPath uri)
+              resource = Resource path (URI.uriQuery uri) (dir ++ path)
           case CI.mk method of
             "OPTIONS" -> do
-              opts <- options dirname
+              opts <- options resource
               reply (if null opts
                        then notFound
                        else Response status200 [allowHeader opts] "")
             method' -> do
-              allowed <- methodAllowed method' dirname
+              allowed <- methodAllowed method' resource
               if allowed
                 then do
-                  response <- handleRequest request dirname
+                  response <- handleRequest request resource
                   if method == "HEAD"
                     then replyEmpty response
                     else reply response
-                else if method' `elem` ["GET", "HEAD"]
-                       -- While technically correct to say that the GET method is not allowed,
-                       -- better to say that the resource is not found.
-                       then reply notFound
-                       else do
-                         opts <- options dirname
-                         reply (Response status405 [allowHeader opts] "")
+                else do
+                  exists <- doesDirectoryExist (rDir resource)
+                  case method' of
+                    method'' | method'' `elem` ["GET", "HEAD"] -> reply notFound
+                             | method'' == "DELETE" && not exists -> reply notFound
+                             | otherwise -> do
+                                 opts <- options resource
+                                 reply (Response status405 [allowHeader opts] "")
  where allowHeader opts = ("Allow", B.intercalate ", " opts)
        sendToClient = B.hPutStr h
        reply (Response status headers body) = do
@@ -96,49 +96,48 @@ serveClient h dir = do
 
 notFound = Response status404 [] "Not Found"
 
-handleRequest :: Request BodyReader -> FilePath -> IO (Response BL.ByteString)
-handleRequest request@(Request method _ headers _) dirname =
+handleRequest :: Request BodyReader -> Resource -> IO (Response BL.ByteString)
+handleRequest request@(Request method _ headers _) resource =
   case CI.mk method of
     method' | method' `elem` ["GET", "HEAD"] -> do
-      reps <- availableRepresentations dirname
+      reps <- availableRepresentations (rDir resource)
       -- When the directory exists but there are no representations, we consider it missing.
       if null reps
         then return notFound
         else
-          let acceptable = lookup hAccept headers
-              bests = case acceptable of
-                        Nothing -> reps
-                        Just a  -> let bests' = best $ matches (map repContentType reps) a in
-                                     filter (\r -> isJust $ find (== repContentType r) bests') reps
-          in case bests of
+          let bestReps = case lookup hAccept headers of
+                           Nothing -> reps
+                           Just accept' -> best (mediaTypeMatches reps accept')
+          in case bestReps of
             [] -> return (notAcceptable reps)
-            [r] -> reply' method' =<< representation request dirname r
+            [r] -> reply' method' =<< representation request resource r
             rs ->
               -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
               handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
-                link <- readSymbolicLink $ dirname </> "GET"
-                case find ((== link) . repPath) rs of
+                link <- readSymbolicLink (rDir resource </> "GET")
+                case find ((== link) . mediaTypeToFileName) rs of
                   Nothing -> return $ multipleChoices rs
-                  Just r -> reply' method' =<< representation request dirname r
+                  Just r -> reply' method' =<< representation request resource r
     "POST" -> do
       -- We already checked that there's a file to handle POST in
       -- `options`. This does unnecessary reads from the disk. We also
       -- don't correctly handle any race conditions.
-      execPath <- fromJust `fmap` resourceExecutable "POST" dirname
-      case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
+      execPath <- fromJust `fmap` resourceExecutable "POST" resource
+      case contentType of
         Nothing -> return $ Response status415 [] "Invalid Content-Type"
-        Just mediaType -> handleProcess request execPath [mediaTypeFileName mediaType] []
+        Just mediaType -> handleProcess request execPath resource (Just mediaType) [] []
     "PUT" -> do
-      execPath <- fromJust `fmap` resourceExecutable "PUT" dirname
-      case (parseMediaType . B8.unpack) =<< lookup (CI.mk "Content-Type") (requestHeaders request) of
+      execPath <- fromJust `fmap` resourceExecutable "PUT" resource
+      case contentType of
         Nothing -> return $ Response status415 [] "Invalid Content-Type"
-        Just mediaType -> handleProcess request execPath [dirname, mediaTypeFileName mediaType] []
+        Just mediaType -> handleProcess request execPath resource (Just mediaType) [takeBaseName (rDir resource)] []
     "DELETE" -> do
-      execPath <- fromJust `fmap` resourceExecutable "DELETE" dirname
-      handleProcess request execPath [dirname] []
+      execPath <- fromJust `fmap` resourceExecutable "DELETE" resource
+      handleProcess request execPath resource Nothing [takeBaseName (rDir resource)] []
     _ -> error "Unimplemented but allowed method. This shouldn't happen."
- where repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
-                              (BL.fromChunks [B.intercalate "\n" $ map repContentType rs])
+ where contentType = parseMediaType =<< lookup (CI.mk "Content-Type") headers
+       repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
+                              (BL.fromChunks [B.intercalate "\n" (map printMediaType rs)])
        multipleChoices = repsResp status300
        notAcceptable = repsResp status406
        reply' method' response@(Response code headers' _) =
@@ -148,33 +147,39 @@ handleRequest request@(Request method _ headers _) dirname =
            _ -> undefined
 
 -- Determine which methods are allowed on a given resource.
-options :: FilePath -> IO [Method]
-options dirname = filterM (\ m -> methodAllowed (CI.mk m) dirname) ["GET", "HEAD", "POST", "PUT", "DELETE"]
+options :: Resource -> IO [Method]
+options resource = filterM (\ m -> methodAllowed (CI.mk m) resource) ["GET", "HEAD", "POST", "PUT", "DELETE"]
 
-methodAllowed :: CI Method -> FilePath -> IO Bool
-methodAllowed method dirname =
+methodAllowed :: CI Method -> Resource -> IO Bool
+methodAllowed method resource =
+  let dir = rDir resource in
   case method of
     method' | method' `elem` ["GET", "HEAD"] -> do
-      canRead <- perms [readable] dirname
+      canRead <- perms [readable] dir
       reps <- if canRead
-                then availableRepresentations dirname
+                then availableRepresentations dir
                 else return []
       return (canRead && not (null reps))
+    -- PUT and DELETE on the root resource don't make sense because
+    -- looking for PUT or DELETE executables in the parent directory
+    -- is out of our scope.
+    method' | method' `elem` ["PUT", "DELETE"] && (rPath resource == "/") -> return False
     method' | method' `elem` ["POST", "PUT"] ->
-      isJust `fmap` resourceExecutable method dirname
-    "DELETE" -> doesDirectoryExist dirname <&&> (isJust `fmap` resourceExecutable "DELETE" dirname)
+      isJust `fmap` resourceExecutable method resource
+    "DELETE" -> doesDirectoryExist (rDir resource) <&&> (isJust `fmap` resourceExecutable "DELETE" resource)
     _ -> return False
  where (<&&>) = liftM2 (&&)
 
 -- Return the executable file usable to carry out a given method on a
 -- resource (or Nothing if we do not have a way to carry out that
 -- method).
-resourceExecutable :: CI Method -> FilePath -> IO (Maybe FilePath)
-resourceExecutable method dirname =
+resourceExecutable :: CI Method -> Resource -> IO (Maybe FilePath)
+resourceExecutable method resource =
+  let dir = rDir resource in
   case method of
-    "POST" -> executableFile (dirname </> "POST")
-    "PUT" -> executableFile (parent dirname </> "PUT")
-    "DELETE" -> executableFile (parent dirname </> "DELETE")
+    "POST" -> executableFile (dir </> "POST")
+    "PUT" -> executableFile (parent dir </> "PUT")
+    "DELETE" -> executableFile (parent dir </> "DELETE")
     _ -> return Nothing
  where executableFile path = do
          canExec <- perms [executable] path
@@ -186,46 +191,21 @@ perms fs path = handle (const (return False) :: SomeException -> IO Bool) $ do
   permissions <- getPermissions path
   return (all ($ permissions) fs)
 
--- TODO: Charset and Language
-data Representation = Representation { repPath        :: FilePath
-                                     , repContentType :: B.ByteString }
-                      deriving (Show, Eq)
+availableRepresentations :: FilePath -> IO [MediaType]
+availableRepresentations dir =
+  (return . catMaybes) =<< mapM usable =<< getDirectoryContents dir
+ where usable p = case mediaTypeFromFileName p of
+                    Nothing -> return Nothing
+                    Just mt -> do
+                      canRead <- perms [readable] (dir </> p)
+                      return (if canRead then Just mt else Nothing)
 
-fileRepresentation :: FilePath -> IO Representation
-fileRepresentation path = return Representation { repPath        = path
-                                                , repContentType = BU.fromString $ tr1 [('.', '/')] $ takeFileName path }
- where tr1 :: (Eq a) => [(a, a)] -> [a] -> [a]
-       tr1 _ [] = []
-       tr1 replacements (x:xs) =
-         case lookup x replacements of
-           Nothing -> x : tr1 replacements xs
-           Just replacement -> replacement : xs
-
-availableRepresentations :: FilePath -> IO [Representation]
-availableRepresentations dirname =
-  mapM fileRepresentation =<< filterM usable =<< getDirectoryContents dirname
- where usable :: FilePath -> IO Bool
-       usable p =
-         -- Mime types look like "text/html" and "text/vnd.abc". On the
-         -- filesystem they'll look like "text.html" and "text.vnd.abc". So to
-         -- determine which files are possible representations, we just have to
-         -- look for at least 1 dot. However, we need to ignore hidden files
-         -- like ".gitignore" or we'll get confusing results. To do that, we'll
-         -- just check for at least 1 dot beyond the first character.
-         case elemIndex '.' p of
-           Just i | i > 0 -> do
-             exists <- doesFileExist (dirname </> p)
-             if exists
-               then fileAccess (dirname </> p) True False False
-               else return False
-           _ -> return False
-
-representation :: Request BodyReader -> FilePath -> Representation -> IO (Response BL.ByteString)
-representation request dirname r = do
-  -- TODO: Only set charset on text types.
-  let contentType = repContentType r `B.append` "; charset=utf-8"
-      headers = [("Content-Type", contentType)]
-  perms' <- getPermissions $ dirname </> repPath r
+representation :: Request BodyReader -> Resource -> MediaType -> IO (Response BL.ByteString)
+representation request resource mt = do
+  let dir = rDir resource
+      file = dir </> mediaTypeToFileName mt
+      headers = [("Content-Type", B.concat [mtType mt, "/", mtSubType mt, "; charset=utf-8"])]
+  perms' <- getPermissions file
   if executable perms'
-    then handleProcess request (dirname </> repPath r) [] headers
-    else Response status200 headers `fmap` BL.readFile (dirname </> repPath r)
+    then handleProcess request file resource (Just mt) [] headers
+    else Response status200 headers `fmap` BL.readFile file

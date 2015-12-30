@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 
-module Process (handleProcess) where
+module Process (handleProcess, Resource(..)) where
 
 import Control.DeepSeq (deepseq)
 import Control.Exception (SomeException, try)
@@ -12,25 +12,31 @@ import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.Char (isSpace, isAlphaNum, toUpper)
-import Data.Maybe (fromJust)
+import Data.Maybe (maybeToList)
 import Data.Text.Encoding (decodeUtf8)
 import Network.HTTP.Toolkit (Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Types (Header, parseQuery, Query, status200, status500)
-import qualified Network.URI as URI
 import System.Exit (ExitCode(..))
 import System.FilePath (takeDirectory)
 import System.IO (Handle, hGetLine, hIsEOF)
 import System.Posix.IO (createPipe, closeFd, fdToHandle)
 import System.Process (proc, CreateProcess(..), createProcess, StdStream(..), waitForProcess)
 
-handleProcess :: Request BodyReader -> FilePath -> [String] -> [Header] -> IO (Response BL.ByteString)
-handleProcess request execPath args replyHeaders = do
+import Media
+
+data Resource = Resource { rPath :: FilePath
+                         , rQuery :: String
+                         , rDir :: FilePath } deriving Show
+
+handleProcess :: Request BodyReader -> FilePath -> Resource -> Maybe MediaType -> [String] -> [Header] -> IO (Response BL.ByteString)
+handleProcess request execPath resource mediaType args replyHeaders = do
   -- Create handles for the status code and headers.
   (statusIn, statusOut) <- createPipe
   (headersIn, headersOut) <- createPipe
   -- This was already successfully parsed in order to get this far.
-  let url = fromJust (URI.parseURIReference (BU.toString (requestPath request)))
-      vars = queryEnvVars (URI.uriQuery url)
+  let vars = [("RESOURCE", rPath resource)]
+          ++ map ((,) "REPRESENTATION" . mediaTypeToFileName) (maybeToList mediaType)
+          ++ queryEnvVars (rQuery resource)
           ++ headerEnvVars (requestHeaders request)
           ++ [("STATUS_FD", show statusOut), ("HEADERS_FD", show headersOut)]
   (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
