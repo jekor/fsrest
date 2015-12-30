@@ -1,28 +1,12 @@
-# A RESTful Web Server Designed Around the Filesystem
+# fsrest - A Filesystem-focused RESTful Web Server
 
 fsrest is a webserver that:
 
- - encourages and assists with RESTful website/service design
- - provides pretty URLs for static files
- - enables dynamic sites without databases
+ - encourages RESTful website/application design
+ - leverages the structure of the filesystem
+ - is not tied to any programming language
 
-fsrest is NOT:
-
- - complete (only GET and POST are currently implemented)
- - high performance
- - tied to any programming language
-
-## Motivation and Philosophy
-
-Most modern websites are served by monolithic programs. These programs are usually written in a single language and communicate with a database. Each new feature of the site increases the size and complexity of the program.
-
-### The Right Tool for the Job
-
-fsrest isn't tied to a particular programming language. Its job is just to dispatch HTTP requests to the appropriate place. Mostly, it serves static files. To support dynamic content, you can write POST handlers in any language that you can launch from the shell.
-
-### RESTful by Design
-
-Due to the way fsrest requires that resources (URLs) be directories, it's more difficult to create non-RESTful websites.
+You can use fsrest as a lightweight static web server (with a twist) or to build dynamic sites or modular web services.
 
 ## How it Works
 
@@ -46,16 +30,34 @@ Accept-Encoding: gzip, deflate
 Accept-Language: en-us,en;q=0.5
 ```
 
-The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that `text/html` is the best match for the client's request and sends it back to the client:
+The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that `text/html` is the best match for the client's request and sends it back to the client.
+
+Let's test this now by starting fsrest in the current directory listening on port 80 on all network interfaces.
 
 ```
-HTTP/1.1 200 OK
-Content-Type: text/html; charset="UTF-8"
-...
+$ sudo fsrest . 0.0.0.0 80 &
+[1] 39112
+```
+
+And now we'll use curl to make a request:
+
+```
+$ curl -v http://localhost/home
+* Connected to localhost (127.0.0.1) port 80 (#0)
+> GET / HTTP/1.1
+> Host: localhost
+> User-Agent: curl/7.43.0
+> Accept: */*
+>
+< HTTP/1.1 200 OK
+< Content-Type: text/html; charset=utf-8
+< Transfer-Encoding: Chunked
+<
 <!DOCTYPE html><html><head><title>Home Page</title></head><body></body></html>
+* Connection #0 to host localhost left intact
 ```
 
-(Note that fsrest assumes UTF-8 for all text/* representations.)
+Note that fsrest assumes the UTF-8 character set for all representations.
 
 ### Multiple Representations
 
@@ -108,11 +110,135 @@ $ mv logo.svg image/logo/image.svg+xml
 
 And here you can see a clearer example of how fsrest looks at file names. The MIME type for SVG files is `image/svg+xml`. fsrest doesn't have a registry of MIME types; it simply looks at file names. You could create `image/logo/foo.bar` and if it were served back to the client, it would be sent as type `foo/bar`.
 
+## Dynamic Resources
+
+If the file corresponding to a resource is marked as executable, fsrest will execute it and return its output to the client. For example, let's create a search page that returns a list of all resources containing a given string.
+
+```
+$ mkdir search
+$ cat > search/text.html
+#!/usr/bin/env bash -e
+echo "<h1>Search Results</h1><ul>"
+for dir in $(find .. -type f ! -perm -a+x -exec fgrep -l "$QUERY_PARAM_Q" {} \; | \
+               while read line; do
+                 echo $(dirname $(echo $line | sed 's/^\.\.//'))
+               done | uniq); do
+  echo "<li><a href=\"$dir\">$dir</a></li>"
+done
+echo "</ul>"
+^D
+$ chmod +x text.html
+```
+
+To use the search page:
+
+```
+$ curl http://localhost/search?q=Page
+<h1>Search Results</h1><ul>
+<li><a href="/home">/home</a></li>
+</ul>
+```
+
+This uses the `find` program to look for non-executable files containing a given string and then returns an HTML list of links to the resources. We currently only have one resource (home) that matches the given search. Ignoring the specifics of the bash code, note that:
+
+* Everything output to stdout is sent as the body of the HTTP response (each of the echo lines).
+* The query parameter `q` was accessed through the environment variable `QUERY_PARAM_Q`.
+* If you examine the headers, the Content-Type will be `text/html; charset=utf-8` because of the filename of the script.
+
+Note: stderr is inherited by the executable, so any errors or anything you write to stderr will go to fsrest's stderr. If you're logging the stderr of fsrest you will also log errors from any executables executed by fsrest.
+
+Dynamic resources don't need to be shell scripts; any executable will work. For example, you could compile a Haskell binary and place that in the directory instead. It would be able to access the `QUERY_PARAM_Q` environment variable via the Haskell `getEnv` function.
+
+### Environment Variables
+
+Let's look at some of the environment variables that are passed to the executable. The `env` program prints all environment variables, so we can just create a symlink to it for testing.
+
+```
+$ mkdir debug
+$ ln -s /usr/bin/env debug/text.plain
+$ curl http://localhost/debug?q=Page
+QUERY_STRING=q=Page
+QUERY_JSON={"q":"Page"}
+QUERY_PARAMS=Q
+QUERY_PARAM_Q=Page
+HEADERS=HOST USER_AGENT ACCEPT
+HEADERS_JSON={"Accept":"*/*","User-Agent":"curl/7.43.0","Host":"127.0.0.1"}
+HEADER_HOST=127.0.0.1
+HEADER_USER_AGENT=curl/7.43.0
+HEADER_ACCEPT=*/*
+STATUS_FD=17
+HEADERS_FD=19
+```
+
+* `QUERY_STRING`: the raw query string or the empty string if no query was present
+* `QUERY_JSON`: the query as a JSON object
+* `QUERY_PARAMS`: a list of query parameter environment variable names separated by spaces (useful for iterating over all query parameters)
+* `QUERY_PARAM_*`: the value of each query parameter (possibly empty)
+* `HEADERS`: a list of headers in the request, separated by spaces (useful for iterating over all request headers)
+* `HEADERS_JSON`: all headers as a JSON object
+* `HEADER_*`: the value of each request header
+* `STATUS_FD`: the file descriptor to write a response status code to (see next section)
+* `HEADERS_FD`: the file descriptor to write response headers to (see next section)
+
+Note that environment variables are strings. If you want to use the `*_JSON` variables as objects you will have to decode them first.
+
+### Response Status Code and Headers
+
+Since all output to stdout is sent as the response body, how do you override the HTTP response code and override/add response headers? fsrest sets the `STATUS_FD` and `HEADERS_FD` environment variables to the file descriptors of some pipes it has setup for this purpose. Here's an example of using them to initiate a redirect:
+
+```
+$ mkdir redirect
+$ cat > redirect/text.plain
+#!/usr/bin/env bash -e
+echo "302" >&$STATUS_FD
+echo "Location: /" >&$HEADERS_FD
+^D
+$ chmod +x redirect/text.plain
+```
+
+```
+$ curl -v http://localhost/redirect
+* Connected to localhost (127.0.0.1) port 80 (#0)
+> GET /redirect HTTP/1.1
+> Host: localhost
+> User-Agent: curl/7.43.0
+> Accept: */*
+>
+< HTTP/1.1 302 Found
+< Content-Type: text/plain; charset=utf-8
+< Location: http://localhost/
+< Server: fsrest
+< Transfer-Encoding: Chunked
+<
+* Connection #0 to host localhost left intact
+```
+
+We can use the `STATUS_FD` and `HEADERS_FD` variables in output redirection just like the standard file descriptors (1, 2, and 3). To make use of these when you're not using bash, you can use the corresponding `/dev/fd` devices.
+
+```
+$ mkdir debug-fd
+$ cat > debug-fd/text.plain
+#!/usr/bin/env bash -e
+ls -l /dev/fd/$STATUS_FD /dev/fd/$HEADERS_FD
+^D
+$ chmod +x debug-fd/text.plain
+```
+
+```
+$ curl http://localhost/debug-fd
+prw-rw----  0 root  wheel  0 Dec 30 10:19 /dev/fd/17
+prw-rw----  0 root  wheel  0 Dec 30 10:19 /dev/fd/19
+```
+
+Note: The files here are owned by root since we're running fsrest via sudo (so that we can listen to port 80). You should use a non-root user for anything other than testing.
+
+Note: If your program exits with a non-0 code, the response code will be set to 500 (Internal Server Error) no matter what code you might have set.
+
 ## POSTing new resources
 
-Each resource (directory) can have a `POST` executable (or symlink to an executable) that allows for POSTing of subordinate resources. If it exists, any POST request is passed to the executable with the POST body, if any, passed into stdin. Any request variables are set as environment variables. (Note that file inputs are not currently supported).
+Each resource (directory) can have a `POST` executable (or symlink to an executable) that allows for POSTing of subordinate resources. The POST request body, if it exists, is passed to the executable's stdin.
 
-Let's say you'd like to allow POSTing comments on the front page of your site. The directory that fsrest is serving might contain the single file `text.html`. This means that the root of the site (`/`) will be a simple HTML page. Let's have comments live under the subordinate `comments` resource.
+Let's say you'd like to allow posting comments on the front page of your site. The directory that fsrest is serving might contain the single file `text.html`. This means that the root of the site (`/`) will be a simple HTML page. Let's have comments live under the subordinate `comments` resource.
 
 ```
 $ mkdir comments
@@ -122,64 +248,58 @@ How are we going to post comments? Well, ignoring all the complexities of securi
 
 ```
 $ cat > comments/POST
-#!/usr/bin/env bash
-largest=$(find . -iregex './[0-9]+' -printf "%f\n" | sort -r | head -n 1)
-new=$(expr $largest + 1)
+#!/usr/bin/env bash -e
+largest=$(find . -iregex './[0-9]+' | sort -r | head -n 1)
+if [ -z $largest ]; then
+  new=1
+else
+  new=$(expr $(basename $largest) + 1)
+fi
 mkdir $new
 cat > $new/$1
+echo "201" >&$STATUS_FD
+echo "Location: /comments/$new" >&$HEADERS_FD
 ^D
 $ chmod +x comments/POST
 ```
 
-Let's break this down line by line:
-
- 1. The first line is a shebang that lets the shell know that this is a bash script.
- 2. Next, we use `find` to find the highest comment number already in the directory (the current working directory is the directory that the resource is being POSTed to).
- 3. The next line sets `new` to 1 greater than `largest`. If largest was empty (because there were no existing comments) it sets it to `1`.
- 4. Once we know the new comment number, we create it with `mkdir`.
- 5. Finally, we store the body of the POST request into a file with the POSTed representation. The first argument (`$1`) is the filename corresponding to the Content-Type given by the client.
- 6. We set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
+Make sure to set the `POST` script to executable. If it's not executable, fsrest will not use it and will respond to `POST` requests with `405 Method Not Allowed`.
 
 ```
-$ curl -X POST -H 'Content-Type: text/plain' -d 'Hello, world.' http://yoursite/comments
-1
+$ curl -v -X POST -H 'Content-Type: text/plain' -d 'Hello, world.' http://localhost/comments
+*   Trying 127.0.0.1...
+* Connected to localhost (127.0.0.1) port 80 (#0)
+> POST /comments HTTP/1.1
+> Host: localhost
+> User-Agent: curl/7.43.0
+> Accept: */*
+> Content-Type: text/plain
+> Content-Length: 13
+>
+* upload completely sent off: 13 out of 13 bytes
+< HTTP/1.1 201 Created
+< Location: /comments/1
+< Server: fsrest
+< Transfer-Encoding: Chunked
+<
+* Connection #0 to host localhost left intact
 ```
 
 If everything worked correctly, a new comment should appear in the filesystem as `comments/1/text.plain` and you should be able to `GET` it as well.
 
 ```
-$ curl -X GET http://yoursite/comments/1
+$ curl http://localhost/comments/1
+Hello, world.
 ```
-
-### POST variables
-
-Any parameters POSTed to a resource will be available as variables.
-
-```
-$ echo > comments/POST
-#!/usr/bin/env bash
-env
-^D
-$ chmod +x POST
-$ curl -X POST -d "foo=bar&foos=ball" http://yoursite/
-foos=ball
-PWD=/home/jekor/project/jekor.lan/www
-foo=bar
-SHLVL=1
-CONTENT_TYPE=application/x-www-form-urlencoded
-...
-```
-
-`PWD`, `SHLVL`, and `_` are 3 environment variables that are set by Bash.
 
 ## PUTing new resources
 
-PUT is a little different from POST because while we POST subordinate resources to an already-existing resource, PUT can either create a new resource or update an existing one. Because of this, it's more convenient to place the `PUT` script in the parent directory of the existing or eventual resource.
+PUT is a little different from POST because while we POST subordinate resources to an already-existing resource, PUT can either create a new resource or update an existing one. Because of this, it's more convenient to place the `PUT` script in the parent directory of the resource.
 
-For example, let's implement a simple content management system where articles are created or edited by with PUT operations. A client request might look like:
+For example, let's implement a simple content management system where articles are created or edited with PUT operations. A client request might look like:
 
 ```
-$ curl -X PUT -H 'Content-Type: text/html' -T rest-design.html http://yoursite/articles/restful-api-design
+$ curl -X PUT -H 'Content-Type: text/html' -T rest-design.html http://localhost/articles/restful-api-design
 ```
 
 This command will PUT the contents of the file `rest-design.html` (on the client's computer) to the given URL. We'll need the articles resource to exist and to place a `PUT` executable there.
@@ -187,7 +307,7 @@ This command will PUT the contents of the file `rest-design.html` (on the client
 ```
 $ mkdir articles
 $ cat > articles/PUT
-#!/usr/bin/env bash
+#!/usr/bin/env bash -e
 mkdir -p $1
 cat > $1/$2
 ^D
@@ -196,21 +316,21 @@ $ chmod +x articles/PUT
 
 The first argument to the executable (`$1`) is the name of the resource (`restful-api-design`). The second argument is the filename corresponding to the representation (`text.html`).
 
-What about PUT and existing resources? You might implement editing of the comments from the earlier example with PUT. So, to replace the content that was created by the earlier POST, you could:
+What about PUT for existing resources? You might implement editing of the comments from the earlier example with PUT. So, to replace the content that was created by the earlier POST, you could:
 
 ```
-$ curl -X PUT -H 'Content-Type: text/plain' -d 'First post!' http://yoursite/comments/1
+$ curl -X PUT -H 'Content-Type: text/plain' -d 'First post!' http://localhost/comments/1
 ```
 
-Again, place a `PUT` script in the comment's resource directory:
+Again, place a `PUT` script in the comment resource's parent directory:
 
 ```
-$ echo > comments/1/PUT
-#!/usr/bin/env bash
+$ cat > comments/PUT
+#!/usr/bin/env bash -e
 mkdir -p $1
 cat > $1/$2
 ^D
-$ chmod +x comments/1/PUT
+$ chmod +x comments/PUT
 ```
 
 Note that the `PUT` script is identical in these simple cases but your `PUT` program might restrict the content type that each is allowed to have and do additional validation and transformation before storing the representation to the filesystem.
@@ -224,14 +344,14 @@ Note: A PUT in fsrest doesn't necessarily update a resource, it creates or updat
 DELETE is implemented similar to POST. The `DELETE` script must also be in the parent directory of the resource to delete. For example, for deleting comments:
 
 ```
-$ curl -X DELETE http://yoursite/comments/1
+$ curl -X DELETE http://localhost/comments/1
 ```
 
 Here's a simple (but unsafe) implementation of `DELETE`:
 
 ```
 $ cat > comments/DELETE
-#!/usr/bin/env bash
+#!/usr/bin/env bash -e
 rm -rf $1
 $ chmod +x DELETE
 ```
@@ -257,6 +377,7 @@ fsrest /var/www 0.0.0.0 80
 Here are some current limitations that might be removed in later versions.
 
  - Language negotiation based on `Accept-Language` is not implemented.
+ - I recommend proxying requests to fsrest via a more mature web server for sanitization, logging and to enforce limits.
 
 ## Common Problems
 
@@ -266,4 +387,4 @@ This is probably happening because the file is marked as executable and fsrest i
 
 ### Multiple Choices
 
-If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to `GET`.
+If content negotiation (based on the request's `Accept` header) turns up multiple equally-good results, fsrest will respond with HTTP error code 300 ("Multiple Choices"). This is most likely to happen when a browser makes a request with `Accept: */*`. You can set a default representation for these situations by symlinking the preferred representation to a file named `GET`.
