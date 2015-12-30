@@ -76,7 +76,7 @@ queryEnvVars queryString =
                         _ -> tail queryString
        query = parseQuery (BU.fromString queryString')
        queryVarName name = varName (BU.toString name)
-       queryVar (name, value) = ("QUERY_" ++ queryVarName name, maybe "" BU.toString value)
+       queryVar (name, value) = ("QUERY_PARAM_" ++ queryVarName name, maybe "" BU.toString value)
 
 instance ToJSON Query where
   toJSON = object . map query
