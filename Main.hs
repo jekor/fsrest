@@ -1,11 +1,13 @@
 import Control.Concurrent (forkIO)
 import Control.Exception (finally, handle, SomeException)
 import Control.Monad (filterM, forever, void, liftM2)
+import Data.Attoparsec.ByteString.Char8 hiding (match)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.CaseInsensitive (CI)
+import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (isJust, fromJust, catMaybes)
 import Network (accept)
@@ -51,13 +53,12 @@ listen' address port = do
 serveClient :: Handle -> FilePath -> IO ()
 serveClient h dir = do
   conn <- inputStreamFromHandle h
-  forever $ readRequest True conn >>= \ request@(Request method url _ _) ->
+  forever $ readRequest True conn >>= \ request@(Request method url headers _) ->
     handle handleError $
-      case URI.parseURIReference $ BU.toString url of
-        Nothing -> reply $ Response status400 [] "Bad Request URI"
-        Just uri -> do
+      case (URI.parseURIReference (BU.toString url), parseHost =<< lookup "Host" headers) of
+        (Just uri, Just host) -> do
           let path = dropTrailingPathSeparator (URI.uriPath uri)
-              resource = Resource path (URI.uriQuery uri) (dir ++ path)
+              resource = Resource path (URI.uriQuery uri) ((dir </> host) ++ path)
           case CI.mk method of
             "OPTIONS" -> do
               opts <- options resource
@@ -80,6 +81,7 @@ serveClient h dir = do
                              | otherwise -> do
                                  opts <- options resource
                                  reply (Response status405 [allowHeader opts] "")
+        _ -> reply (Response status400 [] "Bad Request")
  where allowHeader opts = ("Allow", B.intercalate ", " opts)
        sendToClient = B.hPutStr h
        reply (Response status headers body) = do
@@ -93,6 +95,11 @@ serveClient h dir = do
        handleError e = do
          hPrint stderr e
          reply (Response status500 [] "Internal Server Error")
+       parseHost s = case parseOnly hostP s of
+                       Left _ -> Nothing
+                       Right host -> Just host
+       hostP = (map toLower . BU.toString . B.intercalate ".")
+           <$> takeWhile1 (\ c -> isAlpha_ascii c || isDigit c || c == '-') `sepBy` char '.'
 
 notFound = Response status404 [] "Not Found"
 

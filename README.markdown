@@ -32,11 +32,14 @@ Accept-Language: en-us,en;q=0.5
 
 The client is stating that it would prefer to receive HTML, XHTML, or XML, but that anything (`*/*`) will do if those aren't available. When fsrest receives this request, it checks the `home` directory to see what's available. It determines that `text/html` is the best match for the client's request and sends it back to the client.
 
-Let's test this now by starting fsrest in the current directory listening on port 80 on all network interfaces.
+Let's test this now by starting fsrest in the current directory listening on port 80 on all network interfaces. fsrest expects the top-level directory to have one directory for each hostname that it's serving, so we first need to create a `localhost` directory (since that's where we'll be doing our testing). Then we'll change into that directory for the rest of the examples.
 
 ```
+$ mkdir localhost
+$ mv home localhost/
 $ sudo fsrest . 0.0.0.0 80 &
 [1] 39112
+$ cd localhost
 ```
 
 And now we'll use curl to make a request:
