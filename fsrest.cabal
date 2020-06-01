@@ -1,9 +1,9 @@
 Name:          fsrest
-Version:       0.5.0
+Version:       0.6.0
 Cabal-Version: >= 1.2
 License:       MIT
 License-File:  LICENSE
-Copyright:     2012, 2013, 2014, 2015 Chris Forno
+Copyright:     2012, 2013, 2014, 2015, 2020 Chris Forno
 Author:        Chris Forno (jekor)
 Maintainer:    jekor@jekor.com
 Bug-Reports:   jekor@jekor.com
@@ -12,12 +12,14 @@ Package-URL:   https://github.com/jekor/fsrest/zipball/master
 Category:      Web
 Synopsis:      filesystem-based RESTful HTTP server
 Description:   fsrest is a webserver that encourages and assists with RESTful website/service design, provides pretty URLs for static files, and enables dynamic sites without databases
-Tested-With:   GHC == 7.10.2
+Tested-With:   GHC == 8.6.5
 Build-Type:    Simple
 Data-Files:    module.nix
 
 Executable fsrest
   Main-Is:       Main.hs
+  Other-Modules: Media,
+                 Process
   Build-Depends: base >= 4,
                  aeson,
                  attoparsec,
@@ -26,7 +28,6 @@ Executable fsrest
                  deepseq,
                  directory,
                  filepath,
-                 http-kit >= 0.5,
                  http-types,
                  Glob,
                  network >= 2.6,
@@ -37,6 +38,8 @@ Executable fsrest
                  transformers,
                  unix,
                  utf8-string,
-                 vector
-  Extensions:    OverloadedStrings
+                 vector,
+                 wai,
+                 warp
+  Extensions:    OverloadedStrings, PartialTypeSignatures
   GHC-Options:   -Wall -fno-warn-missing-signatures -fno-warn-type-defaults -fno-warn-unused-do-bind -fno-warn-orphans -threaded -O2

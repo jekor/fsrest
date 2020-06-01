@@ -1,55 +1,32 @@
 * Defects
-** DONE Implement as standalone server, not using Network.CGI.
-   CLOSED: [2013-01-25 Fri 09:24]
-   - State "DONE"       from ""           [2013-01-25 Fri 09:24] \\
-     Implemented SCGI. Punting on HTTP for now.
-** Implement CGI.
-** Implement SCGI over unix domain sockets.
-** Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
-** Block reserved CGI environment variables from being overwritten.
+** TODO Switch to Network.listenOn
+** TODO Implement CGI.
+** TODO Implement SCGI over unix domain sockets.
+** TODO Canonicalize URLs (some//thing gives a 404 while some/thing works, make sure to strip trailing / (with a redirect or something)).
+** TODO Block reserved CGI environment variables from being overwritten.
 *** Still necessary after CGI support?
 * Documentation
-** Request and Response headers
-** What happens with ambiguity?
+** TODO Create a simple example site/application in an examples directory.
+** TODO Write an article about how I use it for jekor.com.
+** TODO Request and Response headers
+** TODO Document what happens with ambiguity.
 *** In practice, it's not generally a problem.
-** De-emphasize the whole multiple-representations thing. More important is that each resource can have sub-resources.
-** Create a simple example site.
+** TODO De-emphasize the whole multiple-representations thing. More important is that each resource can have sub-resources.
+** TODO Create a more comprehensive example site.
+** TODO Write a manpage.
 * Security:
-** Using a sandbox/chroot.
-** SSL
+** TODO Use a sandbox/chroot if possible.
+*** Make sure you can't traverse above the web root if not possible.
+** TODO Make sure that headers are safely converted to environment variables (not overwriting sensitive/critical environment variables).
+** TODO Build in limits against DoS attacks.
+** TODO Document SSL
 *** Why it's not implemented natively.
 *** How to deal with https:// URLs.
-** Make sure you can't traverse above the web root.
-** Make sure that headers are safely converted to environment variables.
 * Features
-** Support setting response headers.
-** Support response codes beyond 200 and 500.
-** Make sure that fsrest handles ambiguity deterministically (maybe the most recent representation or the oldest or something).
-** Default to responding to posts with type text/plain? Make it possible to indicate the response content type?
-** Write a manpage.
-** Add support for negotiating languages.
-** Explore the HTTP last modified header.
-** Create a ready-made user/security system.
-** Allow PUT to traverse up above parents to higher ancestor resources.
-* http-kit throws an UnexpectedEndOfInput when a client holds a connection open and then closes it. Here's how it looks from Chrome.
-~/project/fsrest$ result/bin/fsrest www 127.0.0.1 8000
-fsrest: UnexpectedEndOfInput
-fsrest: UnexpectedEndOfInput
-fsrest: UnexpectedEndOfInput
-
-And here's the view from the client side with curl:
-
-~/project/fsrest/www$ curl -v -H "Accept: */*" http://127.0.0.1:8000/
-*   Trying 127.0.0.1...
-* Connected to 127.0.0.1 (127.0.0.1) port 8000 (#0)
-> GET / HTTP/1.1
-> Host: 127.0.0.1:8000
-> User-Agent: curl/7.43.0
-> Accept: */*
->
-< HTTP/1.1 200 OK
-< Transfer-Encoding: Chunked
-< Content-Type: text/html; charset=utf-8
-<
-index
-* Connection #0 to host 127.0.0.1 left intact
+** TODO Make sure that fsrest handles ambiguity deterministically (maybe the most recent representation or the oldest or something).
+** TODO Default to responding to posts with type text/plain? Make it possible to indicate the response content type?
+** TODO Add support for negotiating languages.
+** TODO Explore the HTTP last modified header.
+** TODO Create a ready-made user/security system.
+** TODO Allow PUT to traverse up above parents to higher ancestor resources.
+** TODO Handle Range request

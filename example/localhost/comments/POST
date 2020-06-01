@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+largest=$(find . -iregex './[0-9]+' | sort -r | head -n 1)
+if [ -z $largest ]; then
+  new=1
+else
+  new=$(expr $(basename $largest) + 1)
+fi
+mkdir $new
+cat > $new/$REPRESENTATION
+echo "201" >&$STATUS_FD
+echo "Location: /comments/$new" >&$HEADERS_FD

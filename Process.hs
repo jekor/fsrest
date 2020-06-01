@@ -12,10 +12,12 @@ import qualified Data.ByteString.Lazy.UTF8 as BLU
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.CaseInsensitive as CI
 import Data.Char (isSpace, isAlphaNum, toUpper)
+import Data.Foldable (foldl')
 import Data.Maybe (maybeToList)
 import Data.Text.Encoding (decodeUtf8)
-import Network.HTTP.Toolkit (Request(..), Response(..), BodyReader, sendBody)
 import Network.HTTP.Types (Header, parseQuery, Query, status200, status500)
+import Network.Wai (requestHeaders, responseLBS, lazyRequestBody)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode(..))
 import System.FilePath (takeDirectory)
 import System.IO (Handle, hGetLine, hIsEOF)
@@ -28,12 +30,12 @@ data Resource = Resource { rPath :: FilePath
                          , rQuery :: String
                          , rDir :: FilePath } deriving Show
 
-handleProcess :: Request BodyReader -> FilePath -> Resource -> Maybe MediaType -> [String] -> [Header] -> IO (Response BL.ByteString)
 handleProcess request execPath resource mediaType args replyHeaders = do
   -- Create handles for the status code and headers.
   (statusIn, statusOut) <- createPipe
   (headersIn, headersOut) <- createPipe
   -- This was already successfully parsed in order to get this far.
+  vars' <- getEnvironment
   let vars = [("RESOURCE", rPath resource)]
           ++ map ((,) "REPRESENTATION" . mediaTypeToFileName) (maybeToList mediaType)
           ++ queryEnvVars (rQuery resource)
@@ -41,22 +43,22 @@ handleProcess request execPath resource mediaType args replyHeaders = do
           ++ [("STATUS_FD", show statusOut), ("HEADERS_FD", show headersOut)]
   (Just hin, Just hout, _, ph) <- createProcess ((proc execPath args)
                                                    { cwd = Just (takeDirectory execPath)
-                                                   , env = Just vars
+                                                   , env = Just (foldl' addToAL' vars' vars)
                                                    , std_in = CreatePipe
                                                    , std_out = CreatePipe })
-  sendBody (B8.hPut hin) (requestBody request)
+  BL.hPut hin =<< lazyRequestBody request
   out <- BL.hGetContents hout
   exitCode <- waitForProcess ph
   case exitCode of
-    ExitFailure _ -> return (Response status500 [] "Internal Server Error")
+    ExitFailure _ -> return (responseLBS status500 [] "Internal Server Error")
     ExitSuccess -> do
       ignore (closeFd statusOut)
       ignore (closeFd headersOut)
       status <- readStatus =<< fdToHandle statusIn
       processHeaders <- readHeaders =<< fdToHandle headersIn
       -- Override or merge response headers with any headers written out by the process.
-      let headers = replyHeaders ++ processHeaders
-      return (headers `deepseq` Response status headers out)
+      let headers = replyHeaders <> processHeaders
+      return (headers `deepseq` responseLBS status headers out)
  where ignore a = void (try a :: IO (Either SomeException ()))
        readStatus h = do
          eof <- hIsEOF h
@@ -65,6 +67,8 @@ handleProcess request execPath resource mediaType args replyHeaders = do
            else do
              statusString <- hGetLine h
              return (toEnum (read statusString))
+       addToAL' l (key, value) = (key, value) : delFromAL' l key
+       delFromAL' l key = filter (\a -> (fst a) /= key) l
 
 varName :: String -> String
 varName = map varChar
@@ -84,14 +88,12 @@ queryEnvVars queryString =
        queryVarName name = varName (BU.toString name)
        queryVar (name, value) = ("QUERY_PARAM_" ++ queryVarName name, maybe "" BU.toString value)
 
-instance ToJSON Query where
-  toJSON = object . map query
-   where query (name, value) = decodeUtf8 name .= fmap decodeUtf8 value
+instance ToJSON BU.ByteString where
+  toJSON = toJSON . BU.toString
 
 -- TODO: Ensure that duplicate headers are combined for supported headers.
-instance ToJSON [Header] where
-  toJSON = object . map header
-   where header (name, value) = decodeUtf8 (CI.original name) .= decodeUtf8 value
+instance ToJSON (CI.CI BU.ByteString) where
+  toJSON = toJSON . CI.original
 
 -- Present the headers in various formats to the child process via environment variables.
 headerEnvVars :: [Header] -> [(String, String)]

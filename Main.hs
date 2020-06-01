@@ -11,12 +11,11 @@ import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (isJust, fromJust, catMaybes)
 import Network (accept)
-import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..))
-import Network.HTTP.Toolkit (inputStreamFromHandle, readRequest, Request(..), Response(..), BodyReader)
-import Network.HTTP.Toolkit.Header (sendHeader)
-import Network.HTTP.Toolkit.Response (formatStatusLine)
+import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..), setSocketOption, SocketOption(ReusePort))
 import Network.HTTP.Types (status200, status300, status400, status404, status500, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
+import Network.Wai (requestMethod, requestHeaders, requestHeaderHost, rawPathInfo, responseLBS, responseFile, responseStatus, responseHeaders)
+import Network.Wai.Handler.Warp (runSettingsSocket, defaultSettings)
 import Numeric (showHex)
 import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesDirectoryExist, makeAbsolute)
 import System.Environment (getArgs, getProgName)
@@ -34,9 +33,7 @@ main = do
     [dir', address, port] -> do
       dir <- makeAbsolute dir'
       s <- listen' address port
-      forever $ do
-        (h, _, _) <- accept s
-        void $ forkIO (finally (serveClient h dir) (hClose h))
+      runSettingsSocket defaultSettings s (app dir)
     _ -> do
       program <- getProgName
       hPutStrLn stderr $ "Usage: " ++ program ++ " <directory> <address> <port>"
@@ -46,73 +43,58 @@ listen' :: String -> String -> IO Socket
 listen' address port = do
   addrs <- getAddrInfo Nothing (Just address) (Just port)
   s <- socket AF_INET Stream defaultProtocol
+  setSocketOption s ReusePort 1
   bind s $ addrAddress $ head addrs
   listen s 5 -- maximum number of queued connections '5' should be fine
   return s
 
-serveClient :: Handle -> FilePath -> IO ()
-serveClient h dir = do
-  conn <- inputStreamFromHandle h
-  forever $ readRequest True conn >>= \ request@(Request method url headers _) ->
-    handle handleError $
-      case (URI.parseURIReference (BU.toString url), parseHost =<< lookup "Host" headers) of
-        (Just uri, Just host) -> do
-          let path = dropTrailingPathSeparator (URI.uriPath uri)
-              resource = Resource path (URI.uriQuery uri) ((dir </> host) ++ path)
-          case CI.mk method of
-            "OPTIONS" -> do
-              opts <- options resource
-              reply (if null opts
-                       then notFound
-                       else Response status200 [allowHeader opts] "")
-            method' -> do
-              allowed <- methodAllowed method' resource
-              if allowed
-                then do
-                  response <- handleRequest request resource
-                  if method == "HEAD"
-                    then replyEmpty response
-                    else reply response
-                else do
-                  exists <- doesDirectoryExist (rDir resource)
-                  case method' of
-                    method'' | method'' `elem` ["GET", "HEAD"] -> reply notFound
-                             | method'' == "DELETE" && not exists -> reply notFound
-                             | otherwise -> do
-                                 opts <- options resource
-                                 reply (Response status405 [allowHeader opts] "")
-        _ -> reply (Response status400 [] "Bad Request")
+app dir request reply = do
+  case (URI.parseURIReference (BU.toString (rawPathInfo request)), parseHost =<< (requestHeaderHost request)) of
+    (Just uri, Just host) -> do
+      let path = dropTrailingPathSeparator (URI.uriPath uri)
+          resource = Resource path (URI.uriQuery uri) ((dir </> host) <> path)
+      case CI.mk (requestMethod request) of
+        "OPTIONS" -> do
+          opts <- options resource
+          reply (if null opts
+                   then notFound
+                   else responseLBS status200 [allowHeader opts] "")
+        method' -> do
+          allowed <- methodAllowed method' resource
+          if allowed
+            then do
+              response <- handleRequest request resource
+              reply (if method' == "HEAD" then headResponse response else response)
+            else do
+              exists <- doesDirectoryExist (rDir resource)
+              case method' of
+                method'' | method'' `elem` ["GET", "HEAD"] -> reply notFound
+                         | method'' == "DELETE" && not exists -> reply notFound
+                         | otherwise -> do
+                             opts <- options resource
+                             reply (responseLBS status405 [allowHeader opts] "")
+    _ -> reply (responseLBS status400 [] "Bad Request")
  where allowHeader opts = ("Allow", B.intercalate ", " opts)
-       sendToClient = B.hPutStr h
-       reply (Response status headers body) = do
-         sendHeader sendToClient (formatStatusLine status) (headers ++ [("Transfer-Encoding", "Chunked")])
-         mapM_ (sendToClient . chunk) $ BL.toChunks body
-         sendToClient (chunk "")
-       chunk s = foldr B.append "" [BU.fromString $ showHex (B.length s) "", "\r\n", s, "\r\n"]
-       replyEmpty (Response status headers _) =
-         sendHeader sendToClient (formatStatusLine status) headers
-       handleError :: SomeException -> IO ()
-       handleError e = do
-         hPrint stderr e
-         reply (Response status500 [] "Internal Server Error")
        parseHost s = case parseOnly hostP s of
                        Left _ -> Nothing
                        Right host -> Just host
        hostP = (map toLower . BU.toString . B.intercalate ".")
            <$> takeWhile1 (\ c -> isAlpha_ascii c || isDigit c || c == '-') `sepBy` char '.'
 
-notFound = Response status404 [] "Not Found"
+notFound = responseLBS status404 [] "Not Found"
 
-handleRequest :: Request BodyReader -> Resource -> IO (Response BL.ByteString)
-handleRequest request@(Request method _ headers _) resource =
-  case CI.mk method of
+-- TODO Don't send Content-Length.
+headResponse response = responseLBS (responseStatus response) (responseHeaders response) ""
+
+handleRequest request resource = do
+  case CI.mk (requestMethod request) of
     method' | method' `elem` ["GET", "HEAD"] -> do
       reps <- availableRepresentations (rDir resource)
       -- When the directory exists but there are no representations, we consider it missing.
       if null reps
         then return notFound
         else
-          let bestReps = case lookup hAccept headers of
+          let bestReps = case lookup hAccept (requestHeaders request) of
                            Nothing -> reps
                            Just accept' -> best (mediaTypeMatches reps accept')
           in case bestReps of
@@ -120,7 +102,7 @@ handleRequest request@(Request method _ headers _) resource =
             [r] -> reply' method' =<< representation request resource r
             rs ->
               -- Disambiguate with a GET symlink if it exists. Return multiple choices if it doesn't.
-              handle ((const $ return $ multipleChoices rs) :: SomeException -> IO (Response BL.ByteString)) $ do
+              handle ((const $ return $ multipleChoices rs) :: SomeException -> _) $ do
                 link <- readSymbolicLink (rDir resource </> "GET")
                 case find ((== link) . mediaTypeToFileName) rs of
                   Nothing -> return $ multipleChoices rs
@@ -131,26 +113,26 @@ handleRequest request@(Request method _ headers _) resource =
       -- don't correctly handle any race conditions.
       execPath <- fromJust `fmap` resourceExecutable "POST" resource
       case contentType of
-        Nothing -> return $ Response status415 [] "Invalid Content-Type"
+        Nothing -> return $ responseLBS status415 [] "Invalid Content-Type"
         Just mediaType -> handleProcess request execPath resource (Just mediaType) [] []
     "PUT" -> do
       execPath <- fromJust `fmap` resourceExecutable "PUT" resource
       case contentType of
-        Nothing -> return $ Response status415 [] "Invalid Content-Type"
+        Nothing -> return $ responseLBS status415 [] "Invalid Content-Type"
         Just mediaType -> handleProcess request execPath resource (Just mediaType) [takeBaseName (rDir resource)] []
     "DELETE" -> do
       execPath <- fromJust `fmap` resourceExecutable "DELETE" resource
       handleProcess request execPath resource Nothing [takeBaseName (rDir resource)] []
     _ -> error "Unimplemented but allowed method. This shouldn't happen."
- where contentType = parseMediaType =<< lookup (CI.mk "Content-Type") headers
-       repsResp status rs = Response status [("Content-Type", "text/plain; charset=utf-8")]
+ where contentType = parseMediaType =<< lookup (CI.mk "Content-Type") (requestHeaders request)
+       repsResp status rs = responseLBS status [("Content-Type", "text/plain; charset=utf-8")]
                               (BL.fromChunks [B.intercalate "\n" (map printMediaType rs)])
        multipleChoices = repsResp status300
        notAcceptable = repsResp status406
-       reply' method' response@(Response code headers' _) =
+       reply' method' response =
          case method' of
            "GET" -> return response
-           "HEAD" -> return (Response code headers' "")
+           "HEAD" -> return (headResponse response)
            _ -> undefined
 
 -- Determine which methods are allowed on a given resource.
@@ -207,7 +189,6 @@ availableRepresentations dir =
                       canRead <- perms [readable] (dir </> p)
                       return (if canRead then Just mt else Nothing)
 
-representation :: Request BodyReader -> Resource -> MediaType -> IO (Response BL.ByteString)
 representation request resource mt = do
   let dir = rDir resource
       file = dir </> mediaTypeToFileName mt
@@ -215,4 +196,4 @@ representation request resource mt = do
   perms' <- getPermissions file
   if executable perms'
     then handleProcess request file resource (Just mt) [] headers
-    else Response status200 headers `fmap` BL.readFile file
+    else return (responseFile status200 headers file Nothing)

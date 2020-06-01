@@ -188,6 +188,8 @@ HEADERS_FD=19
 * `STATUS_FD`: the file descriptor to write a response status code to (see next section)
 * `HEADERS_FD`: the file descriptor to write response headers to (see next section)
 
+The executable will also inherent any environment variables from fsrest’s environment.
+
 Note that environment variables are strings. If you want to use the `*_JSON` variables as objects you will have to decode them first.
 
 ### Response Status Code and Headers
@@ -368,12 +370,20 @@ The first argument (`$1`) is the basename of the resource to delete (just as wit
 
 ## Getting Started
 
-Build fsrest with `cabal install` or with `nix-build dev.nix`.
+Build fsrest with `cabal install` or with `nix build`.
 
 Start fsrest and provide it with the directory that you want to serve and give it an address and port number to listen on:
 
 ```
 fsrest /var/www 0.0.0.0 80
+```
+
+### Examples
+
+You can test with the provided example directory.
+
+```
+fsrest example localhost 8080
 ```
 
 ### Installing on NixOS
@@ -392,6 +402,10 @@ Here are some current limitations that might be removed in later versions.
 ### `fsrest: readProcess: some.file  (exit 127): failed`
 
 This is probably happening because the file is marked as executable and fsrest is trying to execute it (and failing).
+
+### `some.file: line 1: syntax error near unexpected token `newline'`
+
+You likely have a static file marked as executable (which is failing to parse as a script).
 
 ### Multiple Choices
 
