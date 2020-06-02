@@ -5,7 +5,7 @@ module Process (handleProcess, Resource(..)) where
 import Control.DeepSeq (deepseq)
 import Control.Exception (SomeException, try)
 import Control.Monad (void)
-import Data.Aeson (ToJSON(..), object, (.=), encode)
+import Data.Aeson (ToJSON(..), encode)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.UTF8 as BLU
@@ -14,8 +14,7 @@ import qualified Data.CaseInsensitive as CI
 import Data.Char (isSpace, isAlphaNum, toUpper)
 import Data.Foldable (foldl')
 import Data.Maybe (maybeToList)
-import Data.Text.Encoding (decodeUtf8)
-import Network.HTTP.Types (Header, parseQuery, Query, status200, status500)
+import Network.HTTP.Types (Header, parseQuery, status200, status500)
 import Network.Wai (requestHeaders, responseLBS, lazyRequestBody)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode(..))

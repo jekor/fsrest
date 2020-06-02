@@ -1,6 +1,5 @@
-import Control.Concurrent (forkIO)
-import Control.Exception (finally, handle, SomeException)
-import Control.Monad (filterM, forever, void, liftM2)
+import Control.Exception (handle, SomeException)
+import Control.Monad (filterM, liftM2)
 import Data.Attoparsec.ByteString.Char8 hiding (match)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
@@ -10,18 +9,16 @@ import Data.CaseInsensitive (CI)
 import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (isJust, fromJust, catMaybes)
-import Network (accept)
 import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..), setSocketOption, SocketOption(ReusePort))
-import Network.HTTP.Types (status200, status300, status400, status404, status500, status405, status406, status415, hAccept, Method)
+import Network.HTTP.Types (status200, status300, status400, status404, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Network.Wai (requestMethod, requestHeaders, requestHeaderHost, rawPathInfo, responseLBS, responseFile, responseStatus, responseHeaders)
 import Network.Wai.Handler.Warp (runSettingsSocket, defaultSettings)
-import Numeric (showHex)
 import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesDirectoryExist, makeAbsolute)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath, takeBaseName)
-import System.IO (Handle, hPutStrLn, stderr, hClose, hPrint)
+import System.IO (hPutStrLn, stderr)
 import System.Posix.Files (readSymbolicLink)
 
 import Media
