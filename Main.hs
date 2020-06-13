@@ -1,5 +1,7 @@
-import Control.Exception (handle, SomeException)
-import Control.Monad (filterM, liftM2)
+{-# LANGUAGE QuasiQuotes #-}
+
+import Control.Exception (handle, SomeException, bracket)
+import Control.Monad (filterM, liftM2, when)
 import Data.Attoparsec.ByteString.Char8 hiding (match)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
@@ -9,41 +11,63 @@ import Data.CaseInsensitive (CI)
 import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (isJust, fromJust, catMaybes)
-import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Socket(..), Family(..), SocketType(..), AddrInfo(..), setSocketOption, SocketOption(ReusePort))
+import Network.Socket (socket, bind, listen, defaultProtocol, getAddrInfo, Family(..), SocketType(..), AddrInfo(..), SockAddr(SockAddrUnix), setSocketOption, SocketOption(ReusePort), shutdown, ShutdownCmd(ShutdownReceive), close)
 import Network.HTTP.Types (status200, status300, status400, status404, status405, status406, status415, hAccept, Method)
 import qualified Network.URI as URI
 import Network.Wai (requestMethod, requestHeaders, requestHeaderHost, rawPathInfo, responseLBS, responseFile, responseStatus, responseHeaders)
 import Network.Wai.Handler.Warp (runSettingsSocket, defaultSettings)
-import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesDirectoryExist, makeAbsolute)
-import System.Environment (getArgs, getProgName)
-import System.Exit (ExitCode(..), exitWith)
+import System.Console.Docopt (docopt, parseArgsOrExit, isPresent, argument, longOption, exitWithUsage, getArgOrExitWith, getArg)
+import System.Directory (getPermissions, Permissions, readable, executable, getDirectoryContents, doesDirectoryExist, makeAbsolute, removeFile)
+import System.Environment (getArgs)
 import System.FilePath (normalise, (</>), dropTrailingPathSeparator, splitPath, joinPath, takeBaseName)
-import System.IO (hPutStrLn, stderr)
-import System.Posix.Files (readSymbolicLink)
+import System.Posix.Files (readSymbolicLink, setFileMode, fileMode, getFileStatus, unionFileModes, otherWriteMode, otherReadMode)
 
 import Media
 import Process
 
-main = do
-  args <- getArgs
-  case args of
-    [dir', address, port] -> do
-      dir <- makeAbsolute dir'
-      s <- listen' address port
-      runSettingsSocket defaultSettings s (app dir)
-    _ -> do
-      program <- getProgName
-      hPutStrLn stderr $ "Usage: " ++ program ++ " <directory> <address> <port>"
-      exitWith (ExitFailure 1)
+usage = [docopt|
+fsrest version 0.7.0
 
-listen' :: String -> String -> IO Socket
-listen' address port = do
-  addrs <- getAddrInfo Nothing (Just address) (Just port)
-  s <- socket AF_INET Stream defaultProtocol
-  setSocketOption s ReusePort 1
-  bind s $ addrAddress $ head addrs
-  listen s 5 -- maximum number of queued connections '5' should be fine
-  return s
+Usage:
+  fsrest [-h] (--address --port | --socket) <directory>
+
+Serve resources from directory <directory>.
+
+Options:
+  -h, --help             show this help message
+  -a, --address=address  IP address to listen on
+  -p, --port=port        port number to listen on
+  -s, --socket=socket    UNIX socket to listen on
+  |]
+
+main = do
+  args <- parseArgsOrExit usage =<< getArgs
+  when (args `isPresent` (longOption "help")) (exitWithUsage usage)
+  dir' <- getArgOrExitWith usage args (argument "directory")
+  dir <- makeAbsolute dir'
+  bracket
+    (case getArg args (longOption "socket") of
+       Just path -> do
+         s <- socket AF_UNIX Stream defaultProtocol
+         bind s (SockAddrUnix path)
+         -- Make the socket world writable, like a port.
+         setFileMode path =<< ((unionFileModes otherReadMode . unionFileModes otherWriteMode . fileMode) <$> getFileStatus path)
+         return s
+       _ -> do
+         address <- getArgOrExitWith usage args (longOption "address")
+         port <- getArgOrExitWith usage args (longOption "port")
+         s <- socket AF_INET Stream defaultProtocol
+         setSocketOption s ReusePort 1
+         addrs <- getAddrInfo Nothing (Just address) (Just port)
+         bind s (addrAddress (head addrs))
+         return s)
+    (\ s -> do shutdown s ShutdownReceive
+               close s
+               case getArg args (longOption "socket") of
+                 Just path -> removeFile path
+                 _ -> return ())
+    (\ s -> do listen s 5
+               runSettingsSocket defaultSettings s (app dir))
 
 app dir request reply = do
   case (URI.parseURIReference (BU.toString (rawPathInfo request)), parseHost =<< (requestHeaderHost request)) of
